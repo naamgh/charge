@@ -61,6 +61,10 @@ Then two checks can push it one step harsher: legs feeling 3/10 or lower (4/10 t
 
 All thresholds live at the top of `engine.js` in `LOAD`.
 
+## Why the programme looks like this
+
+Research on distance runners shows heavy lifting (5 reps or fewer, about 80%+ of max) and plyometrics both improve running economy, and combining them looks best. Moderate 8 to 20 rep work and isometrics on their own don't. So each session runs: tendon prep, plyos while fresh, one heavy main lift (deadlift or hack squat), then single-leg, calf and hip work. Calves are trained heavy, straight and bent knee, because the soleus carries more load than any other muscle when you run. Plyos are dropped on amber and red days.
+
 ## Changing the programme
 
 Everything is in `routines.js`:
@@ -71,6 +75,8 @@ Everything is in `routines.js`:
 - `WEEK.keyRunDays`: days with a key run (Saturday long run by default), used to tick "Key run tomorrow" automatically.
 
 Isometric holds (`hold: true`) count seconds instead of reps. Tap **Start hold** and the app runs a 3 second lead-in, the hold, and for single-leg holds a 5 second switch to the other side, buzzing at each change. Holds grow by 5 seconds when you own them at RPE 8 or easier, then add weight once they reach their max.
+
+**Swapping on the day:** open any exercise in a session and tap **Swap exercise** to pick a stand-in, for when equipment is taken or you want to mix it up. The swap only affects that session. Each exercise keeps its own history, so a swapped-in move progresses on its own numbers. The groups of interchangeable exercises live in `SWAPS` at the bottom of the exercise list; add an exercise to `EXERCISES` and to a group to make it swappable.
 
 Blocks are 4 weeks: 3 build weeks then a deload (one set fewer, 10% lighter). Set the block start date in Settings.
 

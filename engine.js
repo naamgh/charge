@@ -142,25 +142,31 @@ function targetFor(exId, base, history, light, deload) {
     return { sets, reps, kg: null, note: 'First time. Enter the weight you use, the app takes it from here.' };
   }
 
-  if (def.hold && base.reps == null) {
-    // Holds keep their own time target, which grows before any weight is added.
-    reps = progress.targetReps || recent.targetReps || reps;
+  // Holds grow in seconds, plyos grow in contacts. Weight only comes after they max out.
+  const repProg = def.hold || def.repStep;
+  const pStep = def.hold ? def.holdStep : def.repStep;
+  const pMax = def.hold ? def.holdMax : def.repMax;
+  const unit = def.hold ? ' s' : ' contacts';
+  if (repProg && base.reps == null) {
+    reps = (progress && progress.targetReps) || recent.targetReps || reps;
   }
 
-  if (def.hold && light === 'green' && !deload) {
+  if (repProg && light === 'green' && !deload) {
     kg = progress.kg;
     if (progress.allHit && progress.rpe != null && progress.rpe <= 8) {
-      if (reps < def.holdMax) {
-        reps = Math.min(def.holdMax, reps + def.holdStep);
-        note = `Up to ${reps} s. You held every set at RPE ${progress.rpe} last full session.`;
-      } else {
+      if (reps < pMax) {
+        reps = Math.min(pMax, reps + pStep);
+        note = `Up to ${reps}${unit}. Every set was solid at RPE ${progress.rpe} last full session.`;
+      } else if (def.step > 0) {
         kg = progress.kg + def.step;
-        note = `Holding ${reps} s is easy now. Add ${def.step} kg.`;
+        note = `${reps}${unit} is easy now. Add ${def.step} kg.`;
+      } else {
+        note = `Maxed at ${reps}${unit}. Time for a harder version (single leg, higher box).`;
       }
     } else if (!progress.allHit) {
-      note = 'Same time. Some holds fell short last time, own the full time first.';
+      note = `Same target. Some sets fell short last time, own the full ${reps}${unit} first.`;
     } else {
-      note = 'Same time. Get it to RPE 8 or easier before it grows.';
+      note = 'Same target. Get it to RPE 8 or easier before it grows.';
     }
   } else if (light === 'green' && !deload) {
     kg = progress.kg;
@@ -191,6 +197,52 @@ function targetFor(exId, base, history, light, deload) {
   return { sets, reps, kg: kg == null ? null : roundTo(kg, def.step), note };
 }
 
+function makeExercise(base, history, light, deload) {
+  const def = EXERCISES[base.id];
+  const t = targetFor(base.id, base, history, light, deload);
+  const last = lastPerformance(base.id, history).recent;
+  return {
+    id: base.id,
+    base: { sets: base.sets, reps: base.reps, bodyweight: base.bodyweight },
+    name: def.name,
+    perSide: !!def.perSide,
+    hold: !!def.hold,
+    cue: def.cue || '',
+    rest: def.rest,
+    target: { sets: t.sets, reps: t.reps, kg: t.kg },
+    note: t.note,
+    last: last ? last.sets.filter(x => x.done).map(x => ({ kg: x.kg, reps: x.reps })) : [],
+    sets: Array.from({ length: t.sets }, () => ({ kg: t.kg ?? '', reps: t.reps, done: false })),
+    rpe: null,
+  };
+}
+
+// Other exercises that can stand in for this one (from SWAPS in routines.js).
+function altsFor(id) {
+  const out = [];
+  (typeof SWAPS !== 'undefined' ? SWAPS : []).forEach(g => {
+    if (g.includes(id)) g.forEach(x => { if (x !== id && !out.includes(x) && EXERCISES[x]) out.push(x); });
+  });
+  return out;
+}
+
+// Swap exercise i in a session for another, keeping its position. Reset days keep their light dose.
+function swapExercise(session, i, toId, history) {
+  const old = session.exercises[i];
+  const keepDose = session.reset && old.base;
+  const base = { id: toId };
+  if (keepDose) {
+    if (old.base.sets != null) base.sets = old.base.sets;
+    const sameKind = !!EXERCISES[toId].hold === !!old.hold && !!EXERCISES[toId].repStep === !!(EXERCISES[old.id] && EXERCISES[old.id].repStep);
+    if (sameKind && old.base.reps != null) base.reps = old.base.reps;
+    base.bodyweight = old.base.bodyweight && !!EXERCISES[toId].bw;
+  }
+  const next = makeExercise(base, history, session.light, session.deload);
+  next.planned = old.planned || old.id;
+  session.exercises[i] = next;
+  return next;
+}
+
 function buildSession(routineKey, light, history, bw, now) {
   const routine = ROUTINES[routineKey];
   let list;
@@ -201,24 +253,11 @@ function buildSession(routineKey, light, history, bw, now) {
       .forEach(id => list.push({ id }));
   } else {
     list = routine.exercises.map(id => ({ id }));
+    // Amber: legs are carrying load, so no impact work.
+    if (light === 'amber') list = list.filter(e => !EXERCISES[e.id].impact);
   }
 
-  const exercises = list.map(base => {
-    const t = targetFor(base.id, base, history, light, bw.deload);
-    const last = lastPerformance(base.id, history).recent;
-    return {
-      id: base.id,
-      name: EXERCISES[base.id].name,
-      perSide: !!EXERCISES[base.id].perSide,
-      hold: !!EXERCISES[base.id].hold,
-      rest: EXERCISES[base.id].rest,
-      target: { sets: t.sets, reps: t.reps, kg: t.kg },
-      note: t.note,
-      last: last ? last.sets.filter(x => x.done).map(x => ({ kg: x.kg, reps: x.reps })) : [],
-      sets: Array.from({ length: t.sets }, () => ({ kg: t.kg ?? '', reps: t.reps, done: false })),
-      rpe: null,
-    };
-  });
+  const exercises = list.map(base => makeExercise(base, history, light, bw.deload));
 
   return {
     id: 's' + now,
@@ -242,5 +281,5 @@ function sessionVolume(s) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { localISO, loadScore, finalLight, blockWeek, targetFor, buildSession, lastPerformance, sessionVolume, LOAD };
+  module.exports = { altsFor, swapExercise, makeExercise, localISO, loadScore, finalLight, blockWeek, targetFor, buildSession, lastPerformance, sessionVolume, LOAD };
 }

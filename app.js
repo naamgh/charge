@@ -30,7 +30,7 @@ const S = {
 const $app = document.getElementById('app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtKg = kg => (kg === '' || kg == null) ? '' : (Number(kg) % 1 === 0 ? String(Number(kg)) : String(Number(kg)));
-const ICON_CHECK = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D4F23F" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5l10 -10"/></svg>';
+const ICON_CHECK = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5l10 -10"/></svg>';
 
 function toast(msg, ms = 2600) {
   const t = document.createElement('div');
@@ -178,14 +178,14 @@ function loadFit() {
 }
 
 function stravaDescription(rec) {
-  const lines = [`${LIGHT_COPY[rec.light].title} day · Block ${rec.block} Week ${rec.week}${rec.deload ? ' (deload)' : ''}`];
+  const blocks = [];
   rec.exercises.forEach(e => {
     const done = e.sets.filter(x => x.done);
     if (!done.length) return;
-    lines.push(`${e.name} ${done.map(x => `${Number(x.kg) ? fmtKg(x.kg) : 'BW'}×${x.reps}${e.hold ? 's' : ''}`).join(', ')}${e.rpe ? ` (RPE ${e.rpe})` : ''}`);
+    const lines = done.map(x => `${Number(x.kg) ? `${fmtKg(x.kg)} kg` : 'BW'} × ${x.reps}${e.hold ? ' s' : ''}`);
+    blocks.push([e.name, ...lines].join('\n'));
   });
-  lines.push('Logged with Charge');
-  return lines.join('\n');
+  return blocks.join('\n\n');
 }
 
 function setPostState(id, state) {
@@ -207,7 +207,7 @@ async function postSession(id) {
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: 'application/octet-stream' }), `charge-${rec.id}.fit`);
     form.append('data_type', 'fit');
-    form.append('name', `${rec.name} · Charge`);
+    form.append('name', rec.name);
     form.append('description', stravaDescription(rec));
     form.append('external_id', `charge-${rec.id}.fit`);
     const res = await fetch(`${STRAVA_API}/uploads`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
@@ -308,7 +308,7 @@ function viewToday() {
       </div>
       <p>${copy.text}</p>
       ${L.reasons.length ? `<p class="mono" style="font-size:12px">${esc(L.reasons.join(' · '))}</p>` : ''}
-      ${S.stravaError ? `<p style="color:#FF9C92">${esc(S.stravaError)}</p>` : ''}
+      ${S.stravaError ? `<p style="color:var(--red-ink)">${esc(S.stravaError)}</p>` : ''}
       ${acts}
     </section>
 
@@ -397,10 +397,44 @@ function viewExercise(e, i, open) {
         </div>
         <p class="muted" style="font-size:12px">8 = two reps left in the tank. 10 = nothing left.</p>
       </div>` : ''}
-      <div class="note">${esc(e.note)}</div>
-      ${!complete ? `<div><button class="link" data-action="skip-ex" data-ex="${i}">Skip exercise</button></div>` : ''}
+      <div class="note">${e.cue ? `<strong style="color:var(--text);font-weight:500">${esc(e.cue)}</strong><br>` : ''}${esc(e.note)}</div>
+      ${!complete ? `<div class="row" style="gap:20px">
+        ${altsFor(e.id).length ? `<button class="link" data-action="swap-open" data-ex="${i}" aria-expanded="${S.swapOpen === i}">${S.swapOpen === i ? 'Close swap' : 'Swap exercise'}</button>` : ''}
+        <button class="link" data-action="skip-ex" data-ex="${i}">Skip exercise</button>
+      </div>` : ''}
+      ${S.swapOpen === i ? viewSwapList(e, i) : ''}
     </div>
   </article>`;
+}
+
+function viewSwapList(e, i) {
+  const s = S.session;
+  const opts = altsFor(e.id).map(id => {
+    const def = EXERCISES[id];
+    const t = targetFor(id, {}, S.history, s.light, s.deload);
+    const kg = t.kg === null ? 'set kg' : t.kg === 0 ? 'BW' : `${fmtKg(t.kg)} kg`;
+    return `<button class="swap-opt" data-action="swap-to" data-ex="${i}" data-to="${id}">
+      <span>${esc(def.name)}${id === e.planned ? ' <span class="muted">(planned)</span>' : ''}</span>
+      <span class="mono soft" style="font-size:12px;flex:none">${t.sets}×${t.reps}${def.hold ? 's' : ''}${def.perSide ? '/side' : ''} · ${kg}</span>
+    </button>`;
+  }).join('');
+  return `<div class="swap-list" role="group" aria-label="Swap ${esc(e.name)} for">${opts}</div>`;
+}
+
+function rpeSheet() {
+  const i = S.rpePrompt;
+  const e = i != null && S.session && S.session.exercises[i];
+  if (!e || e.rpe != null) return '';
+  return `<div class="sheet-back" data-action="rpe-later"></div>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="rpeTitle">
+    <div class="eyebrow">${esc(e.name)} done</div>
+    <h2 id="rpeTitle">How hard was the last set?</h2>
+    <div class="rpe-grid">
+      ${[[6, 'Easy', '4+ left'], [7, 'Solid', '3 left'], [8, 'Hard', '2 left'], [9, 'Very hard', '1 left'], [10, 'Max', '0 left']].map(([v, l, d]) =>
+        `<button data-action="rpe" data-ex="${i}" data-v="${v}"><span class="mono">${v}</span><span>${l}</span><small>${d}</small></button>`).join('')}
+    </div>
+    <button class="link" data-action="rpe-later" style="align-self:center">Later</button>
+  </div>`;
 }
 
 function sessionFooter() {
@@ -468,7 +502,7 @@ function stravaRow(s) {
   const st = s.strava;
   if (st && st.status === 'posted') return `<div class="row" style="gap:8px"><span class="dot green"></span><a href="https://www.strava.com/activities/${encodeURIComponent(st.activityId)}" target="_blank" rel="noopener">View on Strava</a></div>`;
   if (st && st.status === 'posting') return `<p class="muted">Posting to Strava...</p>`;
-  const err = st && st.status === 'error' ? `<p style="color:#FF9C92;font-size:13px">${esc(st.error)}</p>` : '';
+  const err = st && st.status === 'error' ? `<p style="color:var(--red-ink);font-size:13px">${esc(st.error)}</p>` : '';
   if (!canPost()) return err + `<p class="muted" style="font-size:13px">Not on Strava. ${stravaConnected() ? 'Reconnect Strava in Settings to allow posting.' : 'Connect Strava in Settings to post sessions.'}</p>`;
   return err + `<div><button class="btn btn-sm" data-action="post" data-id="${esc(s.id)}">${st ? 'Retry post to Strava' : 'Post to Strava'}</button></div>`;
 }
@@ -486,7 +520,7 @@ function viewSettings() {
         <p class="soft">${S.strava.athlete ? `Connected as ${esc(S.strava.athlete)}. ` : ''}Charge reads your last 72 hours of runs and rides before each session.</p>
         ${canPost() ? `<label class="toggle"><span>Post sessions to Strava when I finish</span><input type="checkbox" data-setting-check="autoPost" ${st.autoPost !== false ? 'checked' : ''}></label>
           <p class="muted" style="font-size:12px">Posts as Weight Training with every set attached, so Strava can draw the muscle map. If you also record gym sessions on your watch, turn that off to avoid doubles.</p>`
-        : `<p style="color:#F7C680;font-size:14px">Posting to Strava needs one more permission.</p><button class="btn btn-sm btn-primary" data-action="connect">Reconnect to allow posting</button>`}
+        : `<p style="color:var(--amber-ink);font-size:14px">Posting to Strava needs one more permission.</p><button class="btn btn-sm btn-primary" data-action="connect">Reconnect to allow posting</button>`}
         <div class="row">
           <button class="btn btn-sm" data-action="refresh">Refresh now</button>
           <button class="btn btn-sm btn-danger" data-action="disconnect">Disconnect</button>
@@ -501,7 +535,7 @@ function viewSettings() {
         <label class="field">Client Secret<input class="input" type="password" data-setting="clientSecret" value="${esc(st.clientSecret)}" autocomplete="off"></label>
         <p class="muted" style="font-size:12px">Stored only on this phone. Never put it in your GitHub repo.</p>
         <button class="btn btn-primary" data-action="connect">Connect Strava</button>`}
-      ${S.stravaError ? `<p style="color:#FF9C92;font-size:14px">${esc(S.stravaError)}</p>` : ''}
+      ${S.stravaError ? `<p style="color:var(--red-ink);font-size:14px">${esc(S.stravaError)}</p>` : ''}
     </section>
 
     <section class="card stack" aria-label="Training block">
@@ -529,7 +563,7 @@ function render() {
   const inSession = S.view === 'session' && S.session;
   document.body.classList.toggle('in-session', !!inSession);
   let html;
-  if (inSession) html = viewSession() + sessionFooter();
+  if (inSession) html = viewSession() + sessionFooter() + rpeSheet();
   else if (S.view === 'history') html = viewHistory();
   else if (S.view === 'settings') html = viewSettings();
   else html = viewToday();
@@ -567,7 +601,10 @@ function logSet(ei, si) {
   // carry an edited weight forward to the remaining sets
   e.sets.slice(si + 1).forEach(y => { if (!y.done) y.kg = x.kg; });
   if (e.sets.some(y => !y.done)) startRest(e.rest);
-  else startRest(Math.min(e.rest, 90));
+  else {
+    startRest(Math.min(e.rest, 90));
+    if (e.rpe == null) S.rpePrompt = ei;   // last set done: ask straight away
+  }
   return true;
 }
 
@@ -690,7 +727,18 @@ document.addEventListener('click', e => {
       if (si !== -1 && logSet(s.current, si)) { saveSession(); render(); }
       break;
     }
-    case 'rpe': s.exercises[ei].rpe = Number(el.dataset.v); advance(); saveSession(); render(); break;
+    case 'rpe': s.exercises[ei].rpe = Number(el.dataset.v); S.rpePrompt = null; advance(); saveSession(); render(); break;
+    case 'rpe-later': S.rpePrompt = null; render(); break;
+    case 'swap-open': S.swapOpen = S.swapOpen === ei ? null : ei; render(); break;
+    case 'swap-to': {
+      if (s.holdT) { toast('Finish or stop the hold first.'); break; }
+      const cur = s.exercises[ei];
+      if (cur.sets.some(x => x.done) && !confirm(`You've logged sets of ${cur.name}. Swap anyway? Those sets will be dropped.`)) break;
+      const next = swapExercise(s, ei, el.dataset.to, S.history);
+      S.swapOpen = null; s.current = ei; s.rest = null;
+      saveSession(); render(); toast(`Swapped to ${next.name}.`);
+      break;
+    }
     case 'skip-ex': s.exercises[ei].skipped = true; advance(); saveSession(); render(); break;
     case 'hold-start': startHold(); break;
     case 'hold-stop': endHold(true); break;
