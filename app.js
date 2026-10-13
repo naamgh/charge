@@ -105,7 +105,7 @@ function connectStrava() {
     response_type: 'code',
     redirect_uri: redirectUri(),
     approval_prompt: 'auto',
-    scope: 'activity:read_all',
+    scope: 'activity:read_all,activity:write',
   });
   location.href = `${STRAVA_AUTH}?${p}`;
 }
@@ -139,6 +139,7 @@ async function handleOAuthReturn() {
       refresh_token: data.refresh_token,
       expires_at: data.expires_at,
       athlete: data.athlete ? `${data.athlete.firstname || ''} ${data.athlete.lastname || ''}`.trim() : '',
+      scope,
     };
     save('strava', S.strava);
     toast('Strava connected.');
@@ -161,6 +162,71 @@ async function accessToken() {
   Object.assign(S.strava, { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: data.expires_at });
   save('strava', S.strava);
   return S.strava.access_token;
+}
+
+function canPost() { return stravaConnected() && (S.strava.scope || '').includes('activity:write'); }
+
+let fitLoading = null;
+function loadFit() {
+  if (window.ChargeFit) return Promise.resolve();
+  if (!fitLoading) fitLoading = new Promise((ok, bad) => {
+    const sc = document.createElement('script');
+    sc.src = 'fit.bundle.js'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
+    document.head.appendChild(sc);
+  });
+  return fitLoading;
+}
+
+function stravaDescription(rec) {
+  const lines = [`${LIGHT_COPY[rec.light].title} day · Block ${rec.block} Week ${rec.week}${rec.deload ? ' (deload)' : ''}`];
+  rec.exercises.forEach(e => {
+    const done = e.sets.filter(x => x.done);
+    if (!done.length) return;
+    lines.push(`${e.name} ${done.map(x => `${Number(x.kg) ? fmtKg(x.kg) : 'BW'}×${x.reps}${e.hold ? 's' : ''}`).join(', ')}${e.rpe ? ` (RPE ${e.rpe})` : ''}`);
+  });
+  lines.push('Logged with Charge');
+  return lines.join('\n');
+}
+
+function setPostState(id, state) {
+  const rec = S.history.find(h => h.id === id);
+  if (!rec) return;
+  rec.strava = state;
+  save('history', S.history);
+  if (S.view === 'history') render();
+}
+
+async function postSession(id) {
+  const rec = S.history.find(h => h.id === id);
+  if (!rec || !canPost()) return;
+  setPostState(id, { status: 'posting' });
+  try {
+    await loadFit();
+    const bytes = window.ChargeFit.buildFit(rec, EXERCISES);
+    const token = await accessToken();
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: 'application/octet-stream' }), `charge-${rec.id}.fit`);
+    form.append('data_type', 'fit');
+    form.append('name', `${rec.name} · Charge`);
+    form.append('description', stravaDescription(rec));
+    form.append('external_id', `charge-${rec.id}.fit`);
+    const res = await fetch(`${STRAVA_API}/uploads`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+    if (res.status === 401) throw new Error('Strava refused the upload. Reconnect Strava in Settings.');
+    let up = await res.json();
+    if (!res.ok) throw new Error(up.message || `Upload failed (${res.status})`);
+    for (let i = 0; i < 25 && !up.activity_id && !up.error; i++) {
+      await new Promise(r => setTimeout(r, 1500));
+      const poll = await fetch(`${STRAVA_API}/uploads/${up.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      up = await poll.json();
+    }
+    if (up.error) throw new Error(/duplicate/i.test(up.error) ? 'Strava says this session is already there.' : up.error);
+    if (!up.activity_id) throw new Error('Strava is still processing. Check Strava in a minute.');
+    setPostState(id, { status: 'posted', activityId: up.activity_id });
+    toast('Posted to Strava.');
+  } catch (e) {
+    setPostState(id, { status: 'error', error: e.message || 'Upload failed.' });
+    toast(e.message || 'Upload failed.', 4000);
+  }
 }
 
 async function refreshActs(force = false) {
@@ -263,7 +329,7 @@ function viewToday() {
     <div class="card">
       <div class="row between" style="margin-bottom:4px"><h2>${esc(preview.name)}</h2><span class="mono muted" style="font-size:12px">${preview.exercises.length} moves</span></div>
       <ul class="plan">
-        ${preview.exercises.map(e => `<li><span>${esc(e.name)}</span><span class="rx">${e.target.sets}×${e.target.reps}${e.perSide ? '/side' : ''} · ${e.target.kg === null ? 'set kg' : e.target.kg === 0 ? 'BW' : fmtKg(e.target.kg) + ' kg'}</span></li>`).join('')}
+        ${preview.exercises.map(e => `<li><span>${esc(e.name)}</span><span class="rx">${e.target.sets}×${e.target.reps}${e.hold ? 's' : ''}${e.perSide ? '/side' : ''} · ${e.target.kg === null ? 'set kg' : e.target.kg === 0 ? 'BW' : fmtKg(e.target.kg) + ' kg'}</span></li>`).join('')}
       </ul>
     </div>
 
@@ -298,7 +364,7 @@ function viewSession() {
 function viewExercise(e, i, open) {
   const doneSets = e.sets.filter(x => x.done).length;
   const complete = exComplete(e);
-  const rx = `${e.target.sets}×${e.target.reps}${e.perSide ? '/side' : ''}${e.target.kg ? ` · ${fmtKg(e.target.kg)} kg` : e.target.kg === 0 ? ' · BW' : ''}`;
+  const rx = `${e.target.sets}×${e.target.reps}${e.hold ? 's' : ''}${e.perSide ? '/side' : ''}${e.target.kg ? ` · ${fmtKg(e.target.kg)} kg` : e.target.kg === 0 ? ' · BW' : ''}`;
   const top = `<button class="ex-top" data-action="open-ex" data-ex="${i}" aria-expanded="${open}">
       <h2>${esc(e.name)}</h2>
       <span class="row mono soft" style="font-size:12px;flex:none">${complete ? ICON_CHECK : `${doneSets}/${e.sets.length}`}${open ? '' : ` · ${rx}`}</span>
@@ -310,9 +376,9 @@ function viewExercise(e, i, open) {
     const last = e.last[j];
     return `
       <div class="setno ${j === nextIdx ? 'now' : ''}">${j + 1}</div>
-      <div class="muted">${last ? `${fmtKg(last.kg) || 'BW'}×${last.reps}` : '-'}</div>
+      <div class="muted">${last ? `${Number(last.kg) ? fmtKg(last.kg) : 'BW'}×${last.reps}${e.hold ? 's' : ''}` : '-'}</div>
       <div class="${x.done ? 'done' : ''}"><input inputmode="decimal" aria-label="Set ${j + 1} kg" data-ex="${i}" data-set="${j}" data-field="kg" value="${esc(fmtKg(x.kg))}" placeholder="kg"></div>
-      <div class="${x.done ? 'done' : ''}"><input inputmode="numeric" aria-label="Set ${j + 1} reps" data-ex="${i}" data-set="${j}" data-field="reps" value="${esc(x.reps)}"></div>
+      <div class="${x.done ? 'done' : ''}"><input inputmode="numeric" aria-label="Set ${j + 1} ${e.hold ? 'seconds' : 'reps'}" data-ex="${i}" data-set="${j}" data-field="reps" value="${esc(x.reps)}"></div>
       <button class="chk ${x.done ? 'on' : j === nextIdx ? 'next' : ''}" data-action="toggle-set" data-ex="${i}" data-set="${j}" aria-label="${x.done ? 'Undo' : 'Log'} set ${j + 1}" aria-pressed="${x.done}">${x.done ? ICON_CHECK : ''}</button>`;
   }).join('');
 
@@ -321,7 +387,7 @@ function viewExercise(e, i, open) {
     ${top}
     <div class="ex-body">
       <div class="grid">
-        <div class="h">SET</div><div class="h">LAST</div><div class="h">KG</div><div class="h">REPS</div><div class="h" style="text-align:center">DONE</div>
+        <div class="h">SET</div><div class="h">LAST</div><div class="h">KG</div><div class="h">${e.hold ? 'SEC' : 'REPS'}</div><div class="h" style="text-align:center">DONE</div>
         ${rows}
       </div>
       ${needRpe ? `<div class="rpe">
@@ -342,7 +408,13 @@ function sessionFooter() {
   const e = s.exercises[s.current];
   let btn;
   const nextSet = e ? e.sets.findIndex(x => !x.done) : -1;
-  if (e && nextSet !== -1) {
+  if (s.holdT) {
+    btn = `<button class="btn btn-big btn-block" data-action="hold-stop">Stop hold</button>`;
+  } else if (e && nextSet !== -1 && e.hold) {
+    const x = e.sets[nextSet];
+    const kgTxt = Number(x.kg) ? `${fmtKg(x.kg)} kg` : 'bodyweight';
+    btn = `<button class="btn btn-primary btn-big btn-block go" data-action="hold-start"><span>Start hold, set ${nextSet + 1}</span><small>${esc(x.reps)} s${e.perSide ? ' each side' : ''} · ${kgTxt}</small></button>`;
+  } else if (e && nextSet !== -1) {
     const x = e.sets[nextSet];
     const kgTxt = x.kg === '' || x.kg == null ? 'enter kg' : Number(x.kg) === 0 ? 'bodyweight' : `${fmtKg(x.kg)} kg`;
     btn = `<button class="btn btn-primary btn-big btn-block go" data-action="log"><span>Log set ${nextSet + 1}</span><small>${kgTxt} × ${esc(x.reps)}${e.perSide ? ' each side' : ''}</small></button>`;
@@ -354,14 +426,19 @@ function sessionFooter() {
       ? `<button class="btn btn-primary btn-big btn-block" data-action="finish">Finish session</button>`
       : `<button class="btn btn-primary btn-big btn-block" data-action="open-ex" data-ex="${nextEx}">Next: ${esc(s.exercises[nextEx].name)}</button>`;
   }
-  const rest = s.rest ? `<div class="rest" id="rest">
+  const hold = s.holdT ? `<div class="rest hold" id="hold">
+      <span class="eyebrow" id="holdLabel" style="min-width:72px">Get set</span>
+      <div class="bar"><div id="holdBar" style="width:0%"></div></div>
+      <span class="t" id="holdT" style="font-size:22px"></span>
+    </div>` : '';
+  const rest = !s.holdT && s.rest ? `<div class="rest" id="rest">
       <span class="eyebrow">Rest</span>
       <div class="bar"><div id="restBar" style="width:100%"></div></div>
       <span class="t" id="restT"></span>
       <button class="btn btn-sm btn-ghost mono" data-action="rest-add" aria-label="Add 30 seconds">+30</button>
       <button class="btn btn-sm btn-ghost" data-action="rest-clear" aria-label="Stop rest timer">✕</button>
     </div>` : '';
-  return `<div class="s-foot"><div class="inner">${rest}${btn}</div></div>`;
+  return `<div class="s-foot"><div class="inner">${hold}${rest}${btn}</div></div>`;
 }
 
 function viewHistory() {
@@ -378,11 +455,22 @@ function viewHistory() {
         <span class="mono soft" style="font-size:13px">${Math.round(sessionVolume(s)).toLocaleString('en-AU')} kg</span>
       </summary>
       <div class="hist-body">
-        ${s.exercises.map(e => `<div class="hist-ex"><span>${esc(e.name)}${e.rpe ? ` <span class="muted mono" style="font-size:12px">RPE ${e.rpe}</span>` : ''}</span><span class="mono">${e.sets.filter(x => x.done).map(x => `${fmtKg(x.kg) || 'BW'}×${x.reps}`).join('  ') || 'skipped'}</span></div>`).join('')}
+        ${s.exercises.map(e => `<div class="hist-ex"><span>${esc(e.name)}${e.rpe ? ` <span class="muted mono" style="font-size:12px">RPE ${e.rpe}</span>` : ''}</span><span class="mono">${e.sets.filter(x => x.done).map(x => `${Number(x.kg) ? fmtKg(x.kg) : 'BW'}×${x.reps}${e.hold ? 's' : ''}`).join('  ') || 'skipped'}</span></div>`).join('')}
+        ${stravaRow(s)}
+        <div><button class="btn btn-sm" data-action="export-fit" data-id="${esc(s.id)}">Download .fit file</button></div>
         <div><button class="btn btn-sm btn-danger" data-action="del-session" data-id="${esc(s.id)}">Delete session</button></div>
       </div>
     </details>`).join('')}
   </div>`;
+}
+
+function stravaRow(s) {
+  const st = s.strava;
+  if (st && st.status === 'posted') return `<div class="row" style="gap:8px"><span class="dot green"></span><a href="https://www.strava.com/activities/${encodeURIComponent(st.activityId)}" target="_blank" rel="noopener">View on Strava</a></div>`;
+  if (st && st.status === 'posting') return `<p class="muted">Posting to Strava...</p>`;
+  const err = st && st.status === 'error' ? `<p style="color:#FF9C92;font-size:13px">${esc(st.error)}</p>` : '';
+  if (!canPost()) return err + `<p class="muted" style="font-size:13px">Not on Strava. ${stravaConnected() ? 'Reconnect Strava in Settings to allow posting.' : 'Connect Strava in Settings to post sessions.'}</p>`;
+  return err + `<div><button class="btn btn-sm" data-action="post" data-id="${esc(s.id)}">${st ? 'Retry post to Strava' : 'Post to Strava'}</button></div>`;
 }
 
 function viewSettings() {
@@ -396,6 +484,9 @@ function viewSettings() {
       <div class="row between"><h2>Strava</h2><span class="row mono" style="font-size:12px"><span class="dot ${connected ? 'green' : 'red'}"></span>${connected ? 'Connected' : 'Not connected'}</span></div>
       ${connected ? `
         <p class="soft">${S.strava.athlete ? `Connected as ${esc(S.strava.athlete)}. ` : ''}Charge reads your last 72 hours of runs and rides before each session.</p>
+        ${canPost() ? `<label class="toggle"><span>Post sessions to Strava when I finish</span><input type="checkbox" data-setting-check="autoPost" ${st.autoPost !== false ? 'checked' : ''}></label>
+          <p class="muted" style="font-size:12px">Posts as Weight Training with every set attached, so Strava can draw the muscle map. If you also record gym sessions on your watch, turn that off to avoid doubles.</p>`
+        : `<p style="color:#F7C680;font-size:14px">Posting to Strava needs one more permission.</p><button class="btn btn-sm btn-primary" data-action="connect">Reconnect to allow posting</button>`}
         <div class="row">
           <button class="btn btn-sm" data-action="refresh">Refresh now</button>
           <button class="btn btn-sm btn-danger" data-action="disconnect">Disconnect</button>
@@ -472,6 +563,7 @@ function logSet(ei, si) {
     return false;
   }
   x.done = true;
+  x.at = Date.now();
   // carry an edited weight forward to the remaining sets
   e.sets.slice(si + 1).forEach(y => { if (!y.done) y.kg = x.kg; });
   if (e.sets.some(y => !y.done)) startRest(e.rest);
@@ -484,6 +576,54 @@ function advance() {
   const next = s.exercises.findIndex((x, i) => i > s.current && !exComplete(x) && !x.skipped);
   const any = s.exercises.findIndex(x => !exComplete(x) && !x.skipped);
   s.current = next !== -1 ? next : any !== -1 ? any : s.current;
+}
+
+function holdPhases(e, sec) {
+  const p = [{ label: 'Get set', sec: 3, hold: false }];
+  if (e.perSide) p.push({ label: 'Left', sec, hold: true }, { label: 'Switch', sec: 5, hold: false }, { label: 'Right', sec, hold: true });
+  else p.push({ label: 'Hold', sec, hold: true });
+  return p;
+}
+
+// Where are we in the hold? Returns the phase, seconds into it, and whether it's over.
+function holdState(h) {
+  let t = (Date.now() - h.start) / 1000;
+  for (let i = 0; i < h.phases.length; i++) {
+    const ph = h.phases[i];
+    if (t < ph.sec) return { i, ph, into: t, done: false };
+    t -= ph.sec;
+  }
+  return { i: h.phases.length - 1, ph: h.phases[h.phases.length - 1], into: 0, done: true };
+}
+
+function startHold() {
+  const s = S.session;
+  const e = s.exercises[s.current];
+  const si = e.sets.findIndex(x => !x.done);
+  if (si === -1) return;
+  const sec = Number(e.sets[si].reps) || e.target.reps;
+  s.rest = null;
+  s.holdT = { ei: s.current, si, start: Date.now(), phases: holdPhases(e, sec), lastPhase: 0 };
+  saveSession(); render();
+}
+
+function endHold(early) {
+  const s = S.session;
+  const h = s.holdT;
+  if (!h) return;
+  const st = holdState(h);
+  const target = h.phases.find(p => p.hold).sec;
+  let held = target;
+  if (early) {
+    if (st.ph.hold) held = Math.round(st.into);
+    else if (st.i === 0) held = 0;          // stopped before starting
+  }
+  s.holdT = null;
+  if (held > 0) {
+    s.exercises[h.ei].sets[h.si].reps = held;
+    logSet(h.ei, h.si);
+  }
+  saveSession(); render();
 }
 
 function finishSession() {
@@ -502,6 +642,7 @@ function finishSession() {
   S.session = null; del('session');
   toast(`Saved. ${Math.round(sessionVolume(rec)).toLocaleString('en-AU')} kg moved.`);
   go('history');
+  if (canPost() && S.settings.autoPost !== false) postSession(rec.id);
 }
 
 /* ---------- Events ---------- */
@@ -551,6 +692,21 @@ document.addEventListener('click', e => {
     }
     case 'rpe': s.exercises[ei].rpe = Number(el.dataset.v); advance(); saveSession(); render(); break;
     case 'skip-ex': s.exercises[ei].skipped = true; advance(); saveSession(); render(); break;
+    case 'hold-start': startHold(); break;
+    case 'hold-stop': endHold(true); break;
+    case 'export-fit': {
+      const rec = S.history.find(h => h.id === el.dataset.id);
+      if (!rec) break;
+      loadFit().then(() => {
+        const bytes = window.ChargeFit.buildFit(rec, EXERCISES);
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+        const link = document.createElement('a');
+        link.href = url; link.download = `charge-${rec.date}-${rec.routine}.fit`;
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }).catch(err => toast(err.message));
+      break;
+    }
     case 'rest-add': if (s.rest) { s.rest.dur += 30; s.rest.buzzed = false; saveSession(); tick(); } break;
     case 'rest-clear': s.rest = null; saveSession(); render(); break;
     case 'finish': finishSession(); break;
@@ -560,6 +716,7 @@ document.addEventListener('click', e => {
       }
       break;
     case 'connect': connectStrava(); break;
+    case 'post': postSession(el.dataset.id); break;
     case 'disconnect':
       if (confirm('Disconnect Strava on this phone?')) { S.strava = null; S.acts = null; del('strava'); del('acts'); render(); }
       break;
@@ -600,7 +757,9 @@ document.addEventListener('input', e => {
 
 document.addEventListener('change', e => {
   const el = e.target;
-  if (el.dataset.today) {
+  if (el.dataset.settingCheck) {
+    S.settings[el.dataset.settingCheck] = el.checked; save('settings', S.settings);
+  } else if (el.dataset.today) {
     S.today[el.dataset.today] = el.type === 'checkbox' ? el.checked : Number(el.value);
     save('today', S.today); render();
   } else if (el.dataset.setting === 'blockStart') {
@@ -624,6 +783,18 @@ function tick() {
   if (!s || S.view !== 'session') return;
   const clock = document.getElementById('clock');
   if (clock) clock.textContent = fmtClock((Date.now() - s.startedAt) / 1000);
+  if (s.holdT) {
+    const h = s.holdT;
+    const st = holdState(h);
+    if (st.done) { if (navigator.vibrate) navigator.vibrate([300, 100, 300]); endHold(false); return; }
+    if (st.i !== h.lastPhase) { h.lastPhase = st.i; saveSession(); if (navigator.vibrate) navigator.vibrate(200); }
+    const lab = document.getElementById('holdLabel');
+    const bar = document.getElementById('holdBar');
+    const t = document.getElementById('holdT');
+    if (lab) lab.textContent = st.ph.label;
+    if (bar) { bar.style.width = `${Math.min(100, (st.into / st.ph.sec) * 100)}%`; bar.style.background = st.ph.hold ? 'var(--accent)' : 'var(--muted)'; }
+    if (t) t.textContent = Math.ceil(st.ph.sec - st.into);
+  }
   if (s.rest) {
     const left = s.rest.dur - (Date.now() - s.rest.start) / 1000;
     const bar = document.getElementById('restBar');
@@ -652,6 +823,7 @@ document.addEventListener('visibilitychange', () => {
 
 (async function boot() {
   if (S.session) S.view = 'session';
+  S.history.forEach(h => { if (h.strava && h.strava.status === 'posting') h.strava = { status: 'error', error: 'Upload was interrupted.' }; });
   render();
   await handleOAuthReturn();
   refreshActs();

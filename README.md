@@ -31,6 +31,17 @@ The secret is saved only in your phone's browser storage. Never commit it to the
 
 If connecting fails with a network error, Strava is blocking the browser from swapping the code for a token. The fix is a tiny proxy on your existing Cloudflare Worker that forwards `POST /oauth/token` to Strava; point `STRAVA_TOKEN` in `app.js` at it.
 
+## Posting to Strava (with muscle map)
+
+When you finish a session, Charge uploads it to Strava as a Weight Training activity with every set attached (exercise, reps, weight). Strava uses those sets to draw its muscle map. The description also lists your sets in plain text, in case the map doesn't show.
+
+- Turn it off under **Settings > Post sessions to Strava when I finish**.
+- Any session can be posted (or retried) from **History**.
+- If you connected before posting existed, Settings shows **Reconnect to allow posting**. Tap it once.
+- If you also record gym sessions on your watch, stop doing that or you'll get two activities.
+
+Each exercise in `routines.js` has a `fit` pair, like `['squat', 'barbellHackSquat']`. That is the name Strava sees. If a move lands on Strava as "Unknown" or lights the wrong muscles, swap the pair for a closer one from Garmin's FIT exercise list. Set durations are estimated at 3 seconds a rep, with rests filled in between.
+
 ## How the load score works
 
 Each activity in the last 72 hours scores points, then fades with time.
@@ -59,11 +70,24 @@ Everything is in `routines.js`:
 - `RESET`: the red-day session.
 - `WEEK.keyRunDays`: days with a key run (Saturday long run by default), used to tick "Key run tomorrow" automatically.
 
+Isometric holds (`hold: true`) count seconds instead of reps. Tap **Start hold** and the app runs a 3 second lead-in, the hold, and for single-leg holds a 5 second switch to the other side, buzzing at each change. Holds grow by 5 seconds when you own them at RPE 8 or easier, then add weight once they reach their max.
+
 Blocks are 4 weeks: 3 build weeks then a deload (one set fewer, 10% lighter). Set the block start date in Settings.
 
 ## Updating
 
 After you push changes, open the app twice: the first open fetches the new files, the second uses them.
+
+## Rebuilding the FIT bundle
+
+`fit.bundle.js` is `src/fit-src.js` packaged with Garmin's FIT SDK. You only need to rebuild it if you change `src/fit-src.js`:
+
+```
+npm i @garmin/fitsdk esbuild
+npx esbuild src/fit-src.js --bundle --format=iife --global-name=ChargeFit --minify --outfile=fit.bundle.js
+```
+
+The FIT SDK is Garmin's, under `FIT-SDK-LICENSE.txt`.
 
 ## Files
 
@@ -75,3 +99,5 @@ After you push changes, open the app twice: the first open fetches the new files
 | `app.js` | Screens, logging, Strava connection |
 | `styles.css` | Look and feel |
 | `sw.js` | Offline support |
+| `fit.bundle.js` | Builds the FIT file Strava reads (loaded only when posting) |
+| `src/fit-src.js` | Source for the bundle |

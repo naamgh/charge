@@ -119,7 +119,7 @@ function lastPerformance(exId, history) {
     if (!done.length) continue;
     const kg = Math.max(...done.map(x => Number(x.kg) || 0));
     const allHit = done.length >= ex.target.sets && done.every(x => Number(x.reps) >= ex.target.reps);
-    const rec = { kg, allHit, rpe: ex.rpe, date: s.date, light: s.light, deload: s.deload, sets: ex.sets };
+    const rec = { kg, allHit, rpe: ex.rpe, date: s.date, light: s.light, deload: s.deload, sets: ex.sets, targetReps: ex.target.reps };
     if (!anyRecord) anyRecord = rec;
     if (s.light === 'green' && !s.deload && !s.reset) return { progress: rec, recent: anyRecord };
   }
@@ -135,13 +135,34 @@ function targetFor(exId, base, history, light, deload) {
   let note;
 
   if (base.bodyweight) {
-    return { sets, reps, kg: 0, note: 'Bodyweight only today.' };
+    return { sets, reps, kg: 0, note: def.hold ? 'Bodyweight hold today. Steady breathing, no shaking out.' : 'Bodyweight only today.' };
   }
   if (!recent) {
+    if (def.bw) return { sets, reps, kg: 0, note: def.hold ? `First time. Hold ${reps} s at bodyweight. Add weight later if it gets easy.` : 'First time. Bodyweight to start.' };
     return { sets, reps, kg: null, note: 'First time. Enter the weight you use, the app takes it from here.' };
   }
 
-  if (light === 'green' && !deload) {
+  if (def.hold && base.reps == null) {
+    // Holds keep their own time target, which grows before any weight is added.
+    reps = progress.targetReps || recent.targetReps || reps;
+  }
+
+  if (def.hold && light === 'green' && !deload) {
+    kg = progress.kg;
+    if (progress.allHit && progress.rpe != null && progress.rpe <= 8) {
+      if (reps < def.holdMax) {
+        reps = Math.min(def.holdMax, reps + def.holdStep);
+        note = `Up to ${reps} s. You held every set at RPE ${progress.rpe} last full session.`;
+      } else {
+        kg = progress.kg + def.step;
+        note = `Holding ${reps} s is easy now. Add ${def.step} kg.`;
+      }
+    } else if (!progress.allHit) {
+      note = 'Same time. Some holds fell short last time, own the full time first.';
+    } else {
+      note = 'Same time. Get it to RPE 8 or easier before it grows.';
+    }
+  } else if (light === 'green' && !deload) {
     kg = progress.kg;
     if (progress.allHit && progress.rpe != null && progress.rpe <= 8) {
       kg = progress.kg + def.step;
@@ -176,8 +197,7 @@ function buildSession(routineKey, light, history, bw, now) {
   if (light === 'red') {
     list = RESET.exercises.map(e => ({ ...e }));
     routine.exercises
-      .filter(id => !EXERCISES[id].legs && !list.find(e => e.id === id))
-      .filter(id => !['hip_flexor', 'sl_calf', 'soleus', 'tib_raise'].includes(id))
+      .filter(id => EXERCISES[id].upper && !list.find(e => e.id === id))
       .forEach(id => list.push({ id }));
   } else {
     list = routine.exercises.map(id => ({ id }));
@@ -190,6 +210,7 @@ function buildSession(routineKey, light, history, bw, now) {
       id: base.id,
       name: EXERCISES[base.id].name,
       perSide: !!EXERCISES[base.id].perSide,
+      hold: !!EXERCISES[base.id].hold,
       rest: EXERCISES[base.id].rest,
       target: { sets: t.sets, reps: t.reps, kg: t.kg },
       note: t.note,
