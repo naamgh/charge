@@ -1,7 +1,7 @@
 // Offline shell. Serves cached app files instantly, refreshes them in the background.
 // Strava requests are never cached.
-const CACHE = 'charge-v7';
-const SHELL = ['./', 'index.html', 'styles.css', 'routines.js', 'engine.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'fit.bundle.js'];
+const CACHE = 'charge-v8';
+const SHELL = ['./', 'index.html', 'styles.css', 'routines.js', 'plan.js', 'engine.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'fit.bundle.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

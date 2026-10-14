@@ -69,13 +69,20 @@ function todayState() {
     S.today = {
       date: iso,
       legs: 7,
-      keyRun: WEEK.keyRunDays.includes(tomorrow),
+      keyRun: (() => { const p = planDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)); return p ? p.key : WEEK.keyRunDays.includes(tomorrow); })(),
       override: 'auto',
       routine: defaultRoutine(now.getDay()).key,
     };
     save('today', S.today);
   }
   return S.today;
+}
+
+// Block week for gym progression. Inside the training plan, the plan decides which weeks are light.
+function currentBW(ms) {
+  const bw = blockWeek(S.settings.blockStart, ms);
+  const p = planDay(new Date(ms));
+  return p ? Object.assign({}, bw, { deload: p.gymLight, plan: p }) : bw;
 }
 
 function stravaConnected() { return !!(S.strava && S.strava.refresh_token); }
@@ -257,10 +264,24 @@ async function refreshActs(force = false) {
 
 /* ---------- Views ---------- */
 
+function planCard(now) {
+  const p = planDay(now);
+  if (!p) return '';
+  const tm = planDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const line = q => q.run ? `${q.run.km} km · ${esc(q.run.text)}${q.key ? ' · key run' : ''}` : esc(q.other || 'Rest');
+  const flag = p.kind === 'race' ? 'Race week' : p.kind === 'gate' ? 'Gate week' : p.kind === 'deload' ? 'Down week' : '';
+  return `<div class="card stack" aria-label="Training plan">
+      <div class="row between"><div class="eyebrow">Sub-2 plan · week ${p.week} of ${p.total} · ${p.phase}</div>${flag ? `<span class="mono muted" style="font-size:12px">${flag}</span>` : ''}</div>
+      <div class="row between"><span class="muted">Today</span><span style="text-align:right">${line(p)}</span></div>
+      ${tm ? `<div class="row between"><span class="muted">Tomorrow</span><span style="text-align:right">${line(tm)}</span></div>` : ''}
+      ${p.gymLight ? '<p class="muted" style="font-size:13px">Gym is on maintenance this week: one set fewer, nothing heavy added.</p>' : ''}
+    </div>`;
+}
+
 function viewToday() {
   const t = todayState();
   const now = new Date();
-  const bw = blockWeek(S.settings.blockStart, now.getTime());
+  const bw = currentBW(now.getTime());
   const plannedKey = defaultRoutine(now.getDay());
   const L = currentLight();
   const copy = LIGHT_COPY[L.light];
@@ -293,8 +314,9 @@ function viewToday() {
         <div class="eyebrow">${now.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short' })}</div>
         <h1>${esc(ROUTINES[t.routine].name)}</h1>
       </div>
-      <div class="mono soft" style="font-size:13px;text-align:right">Block ${bw.block}<br>${bw.deload ? 'Deload week' : `Week ${bw.week} of 3`}</div>
+      <div class="mono soft" style="font-size:13px;text-align:right">${bw.plan ? `Plan week ${bw.plan.week}<br>${bw.plan.phase}${bw.deload ? ' · light gym' : ''}` : `Block ${bw.block}<br>${bw.deload ? 'Deload week' : `Week ${bw.week} of 3`}`}</div>
     </div>
+    ${planCard(now)}
 
     <div class="seg" role="group" aria-label="Routine">
       ${Object.keys(ROUTINES).map(k => `<button data-action="routine" data-v="${k}" aria-pressed="${t.routine === k}">${k} · ${esc(ROUTINES[k].name.split(' ')[0])}</button>`).join('')}
@@ -702,7 +724,7 @@ document.addEventListener('click', e => {
     case 'start': {
       const L = currentLight();
       const now = Date.now();
-      S.session = buildSession(t.routine, L.light, S.history, blockWeek(S.settings.blockStart, now), now);
+      S.session = buildSession(t.routine, L.light, S.history, currentBW(now), now);
       saveSession(); go('session'); keepAwake(); break;
     }
     case 'resume': go('session'); break;
