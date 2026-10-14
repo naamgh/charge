@@ -80,9 +80,21 @@ Isometric holds (`hold: true`) count seconds instead of reps. Tap **Start hold**
 
 Blocks are 4 weeks: 3 build weeks then a deload (one set fewer, 10% lighter). Set the block start date in Settings.
 
+## Sub-2 Half Plan
+
+`plan.js` holds the Sub-2 Half Plan (37 weeks from 5 Oct 2026, Sydney Half on 2 May 2027, Parramatta after). Charge uses it to:
+
+- show today's and tomorrow's run on the Today screen, and the whole plan on the **Plan** tab
+- tick **Key run tomorrow** by itself before quality runs, gate runs, long runs and race day
+- line the gym up with the plan: its lighter weeks become deload weeks, weeks 24 to 28 are maintenance (weights held, one set fewer on big leg lifts), and after week 28 there are no heavy legs
+
+Turn it off under **Settings > Follow the Sub-2 Half Plan** to go back to plain 4-week blocks.
+
 ## Updating
 
-After you push changes, open the app twice: the first open fetches the new files, the second uses them.
+Every release bumps the `?v=` number on the files in `index.html` and the `CACHE` name and `SHELL` list in `sw.js`. That stops a phone from mixing old and new files.
+
+After you push, open the app, close it fully, and open it again (up to three times on the first update after v7). If it ever shows **Reload fresh copy**, tap it: it clears the app's cached files only, never your sessions.
 
 ## Rebuilding the FIT bundle
 
@@ -101,6 +113,7 @@ The FIT SDK is Garmin's, under `FIT-SDK-LICENSE.txt`.
 |---|---|
 | `index.html` | App shell |
 | `routines.js` | Your programme |
+| `plan.js` | The Sub-2 Half Plan |
 | `engine.js` | Load scoring, progression, block weeks |
 | `app.js` | Screens, logging, Strava connection |
 | `styles.css` | Look and feel |

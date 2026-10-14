@@ -54,6 +54,23 @@ function fmtClock(sec) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/* ---------- Plan link ---------- */
+
+function followPlan() { return S.settings.followPlan !== false && typeof planGymMode === 'function'; }
+
+// Which week of training this is. The Sub-2 plan drives it while it runs, otherwise 4-week blocks.
+function trainingWeek(now) {
+  const bw = blockWeek(S.settings.blockStart, now);
+  const pm = followPlan() ? planGymMode(new Date(now)) : null;
+  if (!pm) return bw;
+  return { ...bw, deload: pm.deload, maintain: pm.maintain, noHeavyLegs: pm.noHeavyLegs, planWeek: pm.w, phaseName: pm.phaseName };
+}
+
+function weekLabel(s) {
+  if (s.planWeek) return `Plan W${s.planWeek}${s.deload ? ' lighter' : ''}`;
+  return `B${s.block} W${s.week}${s.deload ? ' deload' : ''}`;
+}
+
 /* ---------- Today state ---------- */
 
 function defaultRoutine(day) {
@@ -64,25 +81,18 @@ function defaultRoutine(day) {
 function todayState() {
   const now = new Date();
   const iso = localISO(now);
-  if (!S.today || S.today.date !== iso) {
+  if (!S.today || S.today.date !== iso || !ROUTINES[S.today.routine]) {
     const tomorrow = (now.getDay() + 1) % 7;
     S.today = {
       date: iso,
       legs: 7,
-      keyRun: (() => { const p = planDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)); return p ? p.key : WEEK.keyRunDays.includes(tomorrow); })(),
+      keyRun: (followPlan() && planKeyRun(now)) || WEEK.keyRunDays.includes(tomorrow),
       override: 'auto',
       routine: defaultRoutine(now.getDay()).key,
     };
     save('today', S.today);
   }
   return S.today;
-}
-
-// Block week for gym progression. Inside the training plan, the plan decides which weeks are light.
-function currentBW(ms) {
-  const bw = blockWeek(S.settings.blockStart, ms);
-  const p = planDay(new Date(ms));
-  return p ? Object.assign({}, bw, { deload: p.gymLight, plan: p }) : bw;
 }
 
 function stravaConnected() { return !!(S.strava && S.strava.refresh_token); }
@@ -178,7 +188,7 @@ function loadFit() {
   if (window.ChargeFit) return Promise.resolve();
   if (!fitLoading) fitLoading = new Promise((ok, bad) => {
     const sc = document.createElement('script');
-    sc.src = 'fit.bundle.js'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
+    sc.src = 'fit.bundle.js?v=8'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
     document.head.appendChild(sc);
   });
   return fitLoading;
@@ -264,24 +274,10 @@ async function refreshActs(force = false) {
 
 /* ---------- Views ---------- */
 
-function planCard(now) {
-  const p = planDay(now);
-  if (!p) return '';
-  const tm = planDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
-  const line = q => q.run ? `${q.run.km} km · ${esc(q.run.text)}${q.key ? ' · key run' : ''}` : esc(q.other || 'Rest');
-  const flag = p.kind === 'race' ? 'Race week' : p.kind === 'gate' ? 'Gate week' : p.kind === 'deload' ? 'Down week' : '';
-  return `<div class="card stack" aria-label="Training plan">
-      <div class="row between"><div class="eyebrow">Sub-2 plan · week ${p.week} of ${p.total} · ${p.phase}</div>${flag ? `<span class="mono muted" style="font-size:12px">${flag}</span>` : ''}</div>
-      <div class="row between"><span class="muted">Today</span><span style="text-align:right">${line(p)}</span></div>
-      ${tm ? `<div class="row between"><span class="muted">Tomorrow</span><span style="text-align:right">${line(tm)}</span></div>` : ''}
-      ${p.gymLight ? '<p class="muted" style="font-size:13px">Gym is on maintenance this week: one set fewer, nothing heavy added.</p>' : ''}
-    </div>`;
-}
-
 function viewToday() {
   const t = todayState();
   const now = new Date();
-  const bw = currentBW(now.getTime());
+  const bw = trainingWeek(now.getTime());
   const plannedKey = defaultRoutine(now.getDay());
   const L = currentLight();
   const copy = LIGHT_COPY[L.light];
@@ -314,14 +310,17 @@ function viewToday() {
         <div class="eyebrow">${now.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short' })}</div>
         <h1>${esc(ROUTINES[t.routine].name)}</h1>
       </div>
-      <div class="mono soft" style="font-size:13px;text-align:right">${bw.plan ? `Plan week ${bw.plan.week}<br>${bw.plan.phase}${bw.deload ? ' · light gym' : ''}` : `Block ${bw.block}<br>${bw.deload ? 'Deload week' : `Week ${bw.week} of 3`}`}</div>
+      <div class="mono soft" style="font-size:16px;text-align:right">${bw.planWeek
+        ? `Plan week ${bw.planWeek}<br>${bw.deload ? 'Lighter week' : esc(bw.phaseName)}`
+        : `Block ${bw.block}<br>${bw.deload ? 'Deload week' : `Week ${bw.week} of 3`}`}</div>
     </div>
-    ${planCard(now)}
 
     <div class="seg" role="group" aria-label="Routine">
       ${Object.keys(ROUTINES).map(k => `<button data-action="routine" data-v="${k}" aria-pressed="${t.routine === k}">${k} · ${esc(ROUTINES[k].name.split(' ')[0])}</button>`).join('')}
     </div>
     ${!plannedKey.planned ? '<p class="muted" style="font-size:13px">No gym planned today. Pick a routine if you are going anyway.</p>' : ''}
+
+    ${runCard(now)}
 
     <section class="light ${L.light}" aria-label="Today's light">
       <div class="row between">
@@ -370,7 +369,7 @@ function viewSession() {
   <div class="stack">
     <div class="s-head">
       <div>
-        <div class="eyebrow">${esc(s.name)} · B${s.block} W${s.week}${s.deload ? ' deload' : ''}</div>
+        <div class="eyebrow">${esc(s.name)} · ${weekLabel(s)}</div>
         <div class="clock" id="clock">${fmtClock((Date.now() - s.startedAt) / 1000)}</div>
       </div>
       <div class="row">
@@ -506,7 +505,7 @@ function viewHistory() {
       <summary>
         <div>
           <div class="row" style="gap:8px"><span class="dot ${s.light}"></span><strong>${esc(s.name)}</strong></div>
-          <div class="mono muted" style="font-size:12px;margin-top:4px">${new Date(s.date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })} · B${s.block} W${s.week} · ${fmtDuration(Math.max(1, Math.round(((s.endedAt || s.startedAt) - s.startedAt) / 60000)))}</div>
+          <div class="mono muted" style="font-size:12px;margin-top:4px">${new Date(s.date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })} · ${weekLabel(s)} · ${fmtDuration(Math.max(1, Math.round(((s.endedAt || s.startedAt) - s.startedAt) / 60000)))}</div>
         </div>
         <span class="mono soft" style="font-size:13px">${Math.round(sessionVolume(s)).toLocaleString('en-AU')} kg</span>
       </summary>
@@ -531,7 +530,7 @@ function stravaRow(s) {
 
 function viewSettings() {
   const st = S.settings;
-  const bw = blockWeek(st.blockStart, Date.now());
+  const bw = trainingWeek(Date.now());
   const connected = stravaConnected();
   return `<div class="stack">
     <div class="head"><div><div class="eyebrow">Settings</div><h1>Setup</h1></div></div>
@@ -561,10 +560,14 @@ function viewSettings() {
     </section>
 
     <section class="card stack" aria-label="Training block">
-      <h2>Training block</h2>
-      <p class="soft">Blocks run 4 weeks: 3 build weeks, then a deload. Set the Monday your current block started.</p>
-      <label class="field">Block start<input class="input" type="date" data-setting="blockStart" value="${esc(st.blockStart)}"></label>
-      <p class="mono soft" style="font-size:13px">Now: Block ${bw.block}, ${bw.deload ? 'deload week' : `week ${bw.week}`}</p>
+      <h2>Training weeks</h2>
+      <label class="toggle"><span>Follow the Sub-2 Half Plan</span><input type="checkbox" data-setting-check="followPlan" ${followPlan() ? 'checked' : ''}></label>
+      ${followPlan()
+        ? `<p class="soft">The gym follows the plan: its lighter weeks, the maintenance phase from week 24, and no heavy legs after week 28. "Key run tomorrow" ticks itself before quality and long runs.</p>
+           <p class="mono soft" style="font-size:16px">${bw.planWeek ? `Now: plan week ${bw.planWeek}, ${esc(bw.phaseName)}${bw.deload ? ', lighter week' : ''}` : 'The plan is not running this week, so 4-week blocks are used.'}</p>`
+        : `<p class="soft">Blocks run 4 weeks: 3 build weeks, then a deload. Set the Monday your current block started.</p>
+           <label class="field">Block start<input class="input" type="date" data-setting="blockStart" value="${esc(st.blockStart)}"></label>
+           <p class="mono soft" style="font-size:16px">Now: Block ${bw.block}, ${bw.deload ? 'deload week' : `week ${bw.week}`}</p>`}
     </section>
 
     <section class="card stack" aria-label="Data">
@@ -579,16 +582,143 @@ function viewSettings() {
   </div>`;
 }
 
+/* ---------- Safety net ---------- */
+
+// Never a blank screen: show what broke and a one-tap fix. Your sessions are never touched.
+function viewCrash(err) {
+  const msg = (err && (err.stack || err.message)) || String(err);
+  return `<div class="stack">
+    <div class="head"><div><div class="eyebrow">Something broke</div><h1>Charge hit a snag</h1></div></div>
+    <div class="card stack">
+      <p>Your sessions and settings are safe. Tap below to load a fresh copy of the app.</p>
+      <button class="btn btn-primary btn-big btn-block" data-action="fresh">Reload fresh copy</button>
+      <p class="muted" style="font-size:13px">If it keeps happening, screenshot this and send it to Claude:</p>
+      <pre class="crash">${esc(String(msg).slice(0, 800))}</pre>
+    </div>
+  </div>`;
+}
+
+async function reloadFresh() {
+  del('today'); // only the legs slider and override; sessions and settings stay
+  try {
+    if ('serviceWorker' in navigator) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+    if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+  } catch {}
+  location.replace(location.pathname + '?fresh=' + Date.now());
+}
+
+/* ---------- Plan ---------- */
+
+const RUN_KIND = { rest: 'Rest', easy: 'Easy', quality: 'Quality', gate: 'Gate', long: 'Long run', bike: 'Bike', race: 'Race' };
+
+function runCard(now) {
+  if (typeof planDay !== 'function') return '';
+  const td = planDay(now), tm = planDay(planAddDays(now, 1));
+  if (!td && !tm) return '';
+  const row = (lab, d) => d ? `<div class="run-row">
+      <div class="eyebrow">${lab}</div>
+      <div><strong>${esc(d.title)}</strong><p class="soft" style="font-size:14px;margin-top:2px">${esc(d.detail)}</p></div>
+    </div>` : '';
+  return `<section class="card run-card" aria-label="Run plan">
+    <div class="row between"><h2>Run plan</h2><button class="link" data-action="go" data-v="plan">Open plan</button></div>
+    ${row('Today', td)}${row('Tomorrow', tm)}
+  </section>`;
+}
+
+function planDayRows(w, now) {
+  const ws = planWeekStart(w);
+  return PLAN_DN.map((dn, i) => {
+    const d = planAddDays(ws, i);
+    const p = planDay(d);
+    const isToday = d.getTime() === planMidnight(now).getTime();
+    return `<div class="pday${isToday ? ' today' : ''}${['quality', 'gate', 'long', 'race'].includes(p.kind) ? ' key' : ''}">
+      <div class="pday-d mono">${dn}<small>${planFmt(d)}</small></div>
+      <div style="min-width:0"><strong>${esc(p.title)}</strong>${isToday ? ' <span class="tag">Today</span>' : ''}<p>${esc(p.detail)}</p></div>
+    </div>`;
+  }).join('');
+}
+
+function viewPlan() {
+  const now = new Date();
+  const cw = planWeekOf(now);
+  const toSyd = planDaysTo(PLAN.sydney.date, now);
+  const cur = planWeek(cw);
+  const pct = cw >= 1 && cw <= 30 ? Math.min(100, ((cw - 1) * 7 + Math.round((planMidnight(now) - planWeekStart(cw)) / PLAN_DAY_MS) + 1) / 210 * 100) : cw > 30 ? 100 : 0;
+  const tag = r => r.type === 'gate' ? '<span class="tag gate">Gate</span>' : r.type === 'race' ? '<span class="tag race">Race</span>' : r.type === 'deload' ? '<span class="tag">Lighter</span>' : '';
+
+  const thisWeek = cur ? `<section class="card stack" aria-label="This week">
+      <div class="row between" style="align-items:flex-end">
+        <div><div class="eyebrow">This week · ${planRange(cw)}</div><h2 style="font-size:28px">Week ${cw} · ${esc(planPhaseName(cw))}</h2></div>
+        <div class="mono" style="font-size:28px;font-weight:700;text-align:right">${planTotal(cur)}<small class="muted" style="display:block;font-size:14px;font-weight:600">km run</small></div>
+      </div>
+      ${cw <= 30 ? `<div class="bar" role="img" aria-label="Progress to Sydney"><div style="width:${pct.toFixed(1)}%"></div></div>` : ''}
+      ${cur.note ? `<p class="soft">${esc(cur.note)}</p>` : ''}
+      <div class="pdays">${planDayRows(cw, now)}</div>
+    </section>` : `<section class="card"><p>${cw === 0 ? `The plan starts ${planFmt(planDate(PLAN.start))}.` : 'Plan complete. Time for the 70.3 build.'}</p></section>`;
+
+  const weeks = PLAN.phases.map(([a, b, name, desc]) => `
+    <div class="phase">
+      <div class="eyebrow" style="margin:6px 2px">${esc(name)} · ${planFmt(planWeekStart(a))} to ${planFmt(planAddDays(planWeekStart(b), 6))}</div>
+      ${PLAN.weeks.filter(r => r[0] >= a && r[0] <= b).map(row => {
+        const r = planWeek(row[0]);
+        return `<details class="pweek${r.w === cw ? ' now' : ''}"${r.w === cw ? ' open' : ''}>
+          <summary>
+            <div style="min-width:0"><strong>Week ${r.w}</strong> ${r.w === cw ? '<span class="tag now">This week</span>' : ''}${tag(r)}
+              <div class="muted" style="font-size:14px">${planRange(r.w)} · Thu: ${esc(r.thuText)}</div></div>
+            <div class="mono" style="font-size:22px;font-weight:700;flex:none">${planTotal(r)}<small class="muted" style="font-size:13px"> km</small></div>
+          </summary>
+          <div class="pdays">${planDayRows(r.w, now)}</div>
+        </details>`;
+      }).join('')}
+    </div>`).join('');
+
+  return `<div class="stack">
+    <div class="head">
+      <div><div class="eyebrow">${esc(PLAN.sydney.name)} · 2 May 2027</div><h1>Sub-2 Half Plan</h1></div>
+      <div class="mono" style="text-align:right;font-size:34px;font-weight:700;line-height:1">${toSyd > 0 ? toSyd : toSyd === 0 ? 'Today' : 'Done'}<small style="display:block;font-size:13px;color:#A3A3A3;letter-spacing:0.08em">DAYS TO GO</small></div>
+    </div>
+    <div class="tiles">
+      <div class="tile"><span>Goal</span><b class="mono">1:59:28</b></div>
+      <div class="tile"><span>Race pace</span><b class="mono">5:38/km</b></div>
+      <div class="tile"><span>Easy</span><b class="mono">6:10-7:00</b></div>
+    </div>
+    ${thisWeek}
+    <section class="card stack" aria-label="Gates">
+      <h2>The three gates</h2>
+      ${PLAN.gates.map(([w, what, target]) => `<div class="row between" style="align-items:flex-start;border-top:1px solid var(--line);padding-top:10px">
+        <div><strong>${esc(what)}</strong><div class="muted" style="font-size:14px">Week ${w}, ${planFmt(planWeekStart(w))}${w < cw ? ' · done' : ''}</div></div>
+        <div class="mono" style="font-size:18px;font-weight:700;text-align:right">${esc(target)}</div></div>`).join('')}
+      <p class="muted" style="font-size:13px">Miss two in a row and Sydney becomes a 2:03 race, with sub-2 moving to Parramatta.</p>
+    </section>
+    <section class="card stack" aria-label="Pace guide">
+      <h2>Pace guide</h2>
+      ${PLAN.paces.map(([n, s, p]) => `<div class="row between" style="border-top:1px solid var(--line);padding-top:10px">
+        <div><strong>${esc(n)}</strong><div class="muted" style="font-size:14px">${esc(s)}</div></div>
+        <div class="mono" style="font-size:18px;font-weight:700">${esc(p)}</div></div>`).join('')}
+    </section>
+    <h2 style="margin-top:6px">Week by week</h2>
+    ${weeks}
+    <a class="btn btn-block" style="display:flex;align-items:center;justify-content:center;text-decoration:none" href="${PLAN.url}" target="_blank" rel="noopener">Open the full plan page</a>
+    <p class="muted" style="font-size:13px">The full page has the session guides, race plan and rules. It opens in Claude.</p>
+  </div>`;
+}
+
 /* ---------- Render ---------- */
 
 function render() {
   const inSession = S.view === 'session' && S.session;
   document.body.classList.toggle('in-session', !!inSession);
   let html;
-  if (inSession) html = viewSession() + sessionFooter() + rpeSheet();
-  else if (S.view === 'history') html = viewHistory();
-  else if (S.view === 'settings') html = viewSettings();
-  else html = viewToday();
+  try {
+    if (inSession) html = viewSession() + sessionFooter() + rpeSheet();
+    else if (S.view === 'history') html = viewHistory();
+    else if (S.view === 'settings') html = viewSettings();
+    else if (S.view === 'plan') html = viewPlan();
+    else html = viewToday();
+  } catch (err) {
+    document.body.classList.remove('in-session');
+    html = viewCrash(err);
+  }
   $app.innerHTML = html;
   document.querySelectorAll('.nav-btn').forEach(b => b.setAttribute('aria-current', b.dataset.go === S.view ? 'page' : 'false'));
   tick();
@@ -718,13 +848,14 @@ document.addEventListener('click', e => {
 
   switch (a) {
     case 'go': go(el.dataset.v); break;
+    case 'fresh': reloadFresh(); break;
     case 'routine': t.routine = el.dataset.v; save('today', t); render(); break;
     case 'override': t.override = el.dataset.v; save('today', t); render(); break;
     case 'refresh': refreshActs(true); break;
     case 'start': {
       const L = currentLight();
       const now = Date.now();
-      S.session = buildSession(t.routine, L.light, S.history, currentBW(now), now);
+      S.session = buildSession(t.routine, L.light, S.history, trainingWeek(now), now);
       saveSession(); go('session'); keepAwake(); break;
     }
     case 'resume': go('session'); break;
@@ -829,6 +960,7 @@ document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.settingCheck) {
     S.settings[el.dataset.settingCheck] = el.checked; save('settings', S.settings);
+    if (el.dataset.settingCheck === 'followPlan') { S.today = null; del('today'); render(); }
   } else if (el.dataset.today) {
     S.today[el.dataset.today] = el.type === 'checkbox' ? el.checked : Number(el.value);
     save('today', S.today); render();
@@ -892,6 +1024,7 @@ document.addEventListener('visibilitychange', () => {
 /* ---------- Boot ---------- */
 
 (async function boot() {
+  if (location.search.includes('fresh=')) history.replaceState(null, '', location.pathname);
   if (S.session) S.view = 'session';
   S.history.forEach(h => { if (h.strava && h.strava.status === 'posting') h.strava = { status: 'error', error: 'Upload was interrupted.' }; });
   render();

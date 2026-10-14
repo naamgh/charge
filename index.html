@@ -14,17 +14,45 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<!-- Bump ?v= on every release so a phone can never mix old and new files. -->
+<link rel="stylesheet" href="styles.css?v=8">
+<script>
+  // Rescue screen: if the app has not drawn anything a few seconds after loading
+  // (a file failed to load, or crashed before it could show its own error), offer a fresh copy.
+  window.CHARGE_ERRORS = [];
+  window.addEventListener('error', function (e) { window.CHARGE_ERRORS.push((e.message || 'Load error') + (e.filename ? ' (' + e.filename.split('/').pop() + ')' : '')); }, true);
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      var app = document.getElementById('app');
+      if (app && !app.children.length) {
+        app.innerHTML = '<div style="padding:32px 4px;font-family:system-ui,sans-serif">' +
+          '<h1 style="font-size:28px;margin:0 0 12px">Charge didn\'t load</h1>' +
+          '<p style="margin:0 0 16px;line-height:1.45">Your sessions and settings are safe. Tap below to load a fresh copy of the app.</p>' +
+          '<button id="rescue" style="width:100%;height:58px;border:0;border-radius:8px;background:#CE4832;color:#fff;font-size:18px;font-weight:700">Reload fresh copy</button>' +
+          '<pre style="white-space:pre-wrap;font-size:12px;color:#737373;margin-top:16px">' + window.CHARGE_ERRORS.join('\n').replace(/</g, '&lt;') + '</pre></div>';
+        document.getElementById('rescue').onclick = function () {
+          var done = function () { location.replace(location.pathname + '?fresh=' + Date.now()); };
+          var jobs = [];
+          if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+          if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
+          Promise.all(jobs).then(done, done);
+        };
+      }
+    }, 2500);
+  });
+</script>
 </head>
 <body>
 <div id="app" aria-live="polite"></div>
 <nav id="nav" class="nav" aria-label="Main">
   <button data-go="today" class="nav-btn">Today</button>
+  <button data-go="plan" class="nav-btn">Plan</button>
   <button data-go="history" class="nav-btn">History</button>
   <button data-go="settings" class="nav-btn">Settings</button>
 </nav>
-<script src="routines.js"></script>
-<script src="engine.js"></script>
-<script src="app.js"></script>
+<script src="routines.js?v=8"></script>
+<script src="plan.js?v=8"></script>
+<script src="engine.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

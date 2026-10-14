@@ -138,8 +138,12 @@ function targetFor(exId, base, history, light, deload) {
     return { sets, reps, kg: 0, note: def.hold ? 'Bodyweight hold today. Steady breathing, no shaking out.' : 'Bodyweight only today.' };
   }
   if (!recent) {
-    if (def.bw) return { sets, reps, kg: 0, note: def.hold ? `First time. Hold ${reps} s at bodyweight. Add weight later if it gets easy.` : 'First time. Bodyweight to start.' };
-    return { sets, reps, kg: null, note: 'First time. Enter the weight you use, the app takes it from here.' };
+    // First time: no weight to suggest yet, but lighter days still trim sets.
+    if (light === 'amber' && def.legs && base.sets == null) sets = Math.max(1, sets - 1);
+    if (deload && light !== 'red' && base.sets == null) sets = Math.max(1, sets - 1);
+    const lighter = sets < (base.sets ?? def.sets) ? ' Lighter day, so one set fewer and go easy on the weight.' : '';
+    if (def.bw) return { sets, reps, kg: 0, note: (def.hold ? `First time. Hold ${reps} s at bodyweight. Add weight later if it gets easy.` : 'First time. Bodyweight to start.') + lighter };
+    return { sets, reps, kg: null, note: 'First time. Enter the weight you use, the app takes it from here.' + lighter };
   }
 
   // Holds grow in seconds, plyos grow in contacts. Weight only comes after they max out.
@@ -245,8 +249,11 @@ function swapExercise(session, i, toId, history) {
 
 function buildSession(routineKey, light, history, bw, now) {
   const routine = ROUTINES[routineKey];
+  // The plan can override the day: no heavy legs late in the taper, maintenance in the specific phase.
+  const resetDay = light === 'red' || !!bw.noHeavyLegs;
+  const targetLight = !resetDay && bw.maintain && light === 'green' ? 'amber' : light;
   let list;
-  if (light === 'red') {
+  if (resetDay) {
     list = RESET.exercises.map(e => ({ ...e }));
     routine.exercises
       .filter(id => EXERCISES[id].upper && !list.find(e => e.id === id))
@@ -257,19 +264,27 @@ function buildSession(routineKey, light, history, bw, now) {
     if (light === 'amber') list = list.filter(e => !EXERCISES[e.id].impact);
   }
 
-  const exercises = list.map(base => makeExercise(base, history, light, bw.deload));
+  const exercises = list.map(base => {
+    const ex = makeExercise(base, history, resetDay ? 'red' : targetLight, bw.deload && !resetDay);
+    if (bw.maintain && light === 'green' && !resetDay && !bw.deload) {
+      ex.note = 'Maintenance phase. Same weight as the build, one set fewer on big leg lifts. Finish fresh.';
+    }
+    return ex;
+  });
 
+  const label = bw.noHeavyLegs && light !== 'red' ? 'Taper' : RESET.name;
   return {
     id: 's' + now,
     startedAt: now,
     date: localISO(new Date(now)),
     routine: routineKey,
-    name: light === 'red' ? `${RESET.name} (${routine.name})` : routine.name,
+    name: resetDay ? `${label} (${routine.name})` : routine.name,
     light,
-    reset: light === 'red',
+    reset: resetDay,
     deload: bw.deload,
     block: bw.block,
     week: bw.week,
+    planWeek: bw.planWeek || null,
     exercises,
     current: 0,
   };
