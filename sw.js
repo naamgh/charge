@@ -2,9 +2,9 @@
 // Online: always fetch fresh files (skipping the browser's own cache), so the phone can never
 // end up with a mix of old and new files. Offline: fall back to the last good copy.
 // Strava and other sites are never touched.
-const CACHE = 'charge-v10';
-const SHELL = ['./', 'index.html', 'styles.css?v=10', 'config.js?v=10', 'routines.js?v=10', 'plan.js?v=10', 'engine.js?v=10', 'app.js?v=10',
-  'manifest.webmanifest', 'icon.svg', 'fit.bundle.js?v=10'];
+const CACHE = 'charge-v11';
+const SHELL = ['./', 'index.html', 'styles.css?v=11', 'config.js?v=11', 'routines.js?v=11', 'plan.js?v=11', 'engine.js?v=11', 'app.js?v=11',
+  'manifest.webmanifest', 'icon.svg', 'fit.bundle.js?v=11'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE)

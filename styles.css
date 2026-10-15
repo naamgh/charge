@@ -246,3 +246,7 @@ details.moves[open] summary { margin-bottom: 4px; }
 .sheet .acts { border-top: 0; padding-top: 0; margin-top: 0; }
 .sheet .light-label { font-size: 26px; }
 .sheet { max-height: 85vh; overflow-y: auto; }
+
+/* Update bar */
+.update-bar { position: fixed; left: 12px; right: 12px; top: calc(12px + var(--safe-t)); z-index: 50; display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--ink); color: #FFFFFF; border-radius: 10px; padding: 8px 8px 8px 16px; font-family: var(--mono); font-size: 18px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; max-width: 536px; margin: 0 auto; box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+.update-bar button { height: 44px; padding: 0 16px; border: 0; border-radius: 8px; background: var(--accent); color: #FFFFFF; font-family: var(--mono); font-size: 17px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }

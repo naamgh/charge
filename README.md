@@ -95,9 +95,18 @@ Turn it off under **Settings > Follow the Sub-2 Half Plan** to go back to plain 
 
 ## Updating
 
-Every release bumps the `?v=` number on the files in `index.html` and the `CACHE` name and `SHELL` list in `sw.js`. That stops a phone from mixing old and new files.
+Charge updates itself. Whenever you switch back to it, it checks `version.json` on GitHub. If there's a newer version it reloads straight away, unless you're mid-session or a Strava upload is running. In that case it shows an **Update ready** bar to tap when you're done (your session is kept either way).
 
-After you push, open the app, close it fully, and open it again (up to three times on the first update after v7). If it ever shows **Reload fresh copy**, tap it: it clears the app's cached files only, never your sessions.
+When you change anything yourself, bump the version before you push:
+
+```
+sh bump-version.sh
+git add . && git commit -m "Update" && git push
+```
+
+That updates `version.json`, `APP_VERSION` in `app.js`, the `?v=` numbers in `index.html` and `sw.js`, and the cache name, so phones never mix old and new files. GitHub Pages takes a minute or so to publish.
+
+If Charge ever shows **Reload fresh copy**, tap it: it clears the app's cached files only, never your sessions.
 
 ## Rebuilding the FIT bundle
 

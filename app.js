@@ -1,5 +1,8 @@
 // Charge: UI, storage and Strava. Everything lives in this phone's localStorage.
 
+// Must match version.json and the ?v= numbers in index.html and sw.js.
+const APP_VERSION = 11;
+
 const KEY = 'charge.';
 const load = (k, d) => { try { const v = localStorage.getItem(KEY + k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(KEY + k, JSON.stringify(v)); } catch {} };
@@ -203,7 +206,7 @@ function loadFit() {
   if (window.ChargeFit) return Promise.resolve();
   if (!fitLoading) fitLoading = new Promise((ok, bad) => {
     const sc = document.createElement('script');
-    sc.src = 'fit.bundle.js?v=10'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
+    sc.src = 'fit.bundle.js?v=11'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
     document.head.appendChild(sc);
   });
   return fitLoading;
@@ -1066,8 +1069,60 @@ async function keepAwake() {
   try { if ('wakeLock' in navigator && S.session && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch {}
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { keepAwake(); if (S.view === 'today') refreshActs(); }
+  if (document.visibilityState === 'visible') { keepAwake(); checkForUpdate(); if (S.view === 'today') refreshActs(); }
 });
+
+/* ---------- Self-update ---------- */
+
+// iPhone keeps a home-screen app frozen in memory, so it rarely reloads by itself.
+// Whenever you come back to Charge it checks version.json. If GitHub has a newer version it
+// reloads straight away, unless you're mid-session or a Strava upload is running. Then it
+// shows an "Update ready" bar to tap when you're done.
+let lastUpdateCheck = 0;
+async function checkForUpdate(force = false) {
+  if (!navigator.onLine || (!force && Date.now() - lastUpdateCheck < 60000)) return;
+  lastUpdateCheck = Date.now();
+  try {
+    const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const { version } = await res.json();
+    if (!(Number(version) > APP_VERSION)) return;
+    S.updateReady = Number(version);
+    // Never loop: if a reload already happened for this version and the files were still old
+    // (GitHub can take a few minutes), wait for a tap instead.
+    let tried = null;
+    try { tried = sessionStorage.getItem('charge.reloadedFor'); } catch {}
+    if (safeToReload() && tried !== String(version)) return applyUpdate();
+    showUpdateBar();
+  } catch {}
+}
+
+function safeToReload() {
+  return !S.session && !S.sheet && !S.history.some(h => h.strava && h.strava.status === 'posting');
+}
+
+async function applyUpdate() {
+  try { sessionStorage.setItem('charge.reloadedFor', String(S.updateReady)); } catch {}
+  try {
+    const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
+    if (reg) await reg.update();
+  } catch {}
+  location.reload();
+}
+
+function showUpdateBar() {
+  if (document.getElementById('updateBar')) return;
+  const bar = document.createElement('div');
+  bar.id = 'updateBar';
+  bar.className = 'update-bar';
+  bar.setAttribute('role', 'status');
+  bar.innerHTML = '<span>Update ready</span><button type="button">Update now</button>';
+  bar.querySelector('button').onclick = () => {
+    if (S.session && !confirm('Your session is saved and will still be here after the update. Update now?')) return;
+    applyUpdate();
+  };
+  document.body.appendChild(bar);
+}
 
 /* ---------- Boot ---------- */
 
@@ -1080,4 +1135,6 @@ document.addEventListener('visibilitychange', () => {
   refreshActs();
   keepAwake();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  setTimeout(() => checkForUpdate(true), 3000);
+  setInterval(() => { if (document.visibilityState === 'visible') checkForUpdate(); }, 30 * 60000);
 })();
