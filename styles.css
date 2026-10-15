@@ -214,3 +214,35 @@ details.pweek summary { list-style: none; display: flex; justify-content: space-
 details.pweek summary::-webkit-details-marker { display: none; }
 details.pweek summary strong { font-family: var(--mono); font-size: 20px; text-transform: uppercase; }
 details.pweek .pdays { padding: 0 14px 8px; }
+
+/* Strava connect button (Strava orange, per their brand guidelines) */
+.btn-strava { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 56px; border: 0; border-radius: 8px; background: #FC5200; color: #FFFFFF; font-family: var(--sans); font-size: 17px; font-weight: 700; }
+.btn-strava:active { background: #E04A00; }
+
+/* Today, tidy */
+.tcard { display: flex; flex-direction: column; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; text-align: left; width: 100%; color: var(--text); }
+.tcard.gym { border: 2px solid var(--ink); }
+.tcard.gym.quiet { border: 1px solid var(--line); }
+.tcard.gym.quiet .gym-title { font-size: 26px; }
+.trow { flex-direction: row; align-items: center; gap: 12px; min-height: 64px; }
+.trow-title { font-size: 17px; font-weight: 600; margin-top: 2px; }
+.trow-sub { font-size: 14px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.chev { width: 10px; height: 10px; border-right: 2.5px solid var(--muted); border-bottom: 2.5px solid var(--muted); transform: rotate(-45deg); flex: none; margin-right: 4px; }
+.gym-title { font-size: 30px; line-height: 1; margin: 0; min-width: 0; }
+.gym-meta { font-size: 17px; font-weight: 600; }
+.gym-note { font-size: 15px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-radius: 18px; border: 1px solid; font-family: var(--mono); font-size: 16px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; background: transparent; }
+.chip.green { background: #EEF8F2; border-color: #BFE5CC; color: #16683C; }
+.chip.amber { background: #FDF4E6; border-color: #F1D3A2; color: var(--amber-ink); }
+.chip.red { background: #FCEDEB; border-color: #F0C2BC; color: var(--red-ink); }
+.ab { display: flex; gap: 4px; background: var(--surface-2); border-radius: 8px; padding: 3px; flex: none; }
+.ab button { width: 44px; height: 38px; border: 0; border-radius: 6px; background: transparent; font-family: var(--mono); font-size: 18px; font-weight: 700; color: var(--muted); }
+.ab button[aria-pressed="true"] { background: var(--ink); color: #FFFFFF; }
+details.moves summary { list-style: none; cursor: pointer; font-weight: 600; min-height: 40px; display: flex; align-items: center; gap: 8px; text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+details.moves summary::-webkit-details-marker { display: none; }
+details.moves[open] summary { margin-bottom: 4px; }
+.checkin { min-height: 60px; }
+.checkin .trow-title { font-size: 16px; }
+.sheet .acts { border-top: 0; padding-top: 0; margin-top: 0; }
+.sheet .light-label { font-size: 26px; }
+.sheet { max-height: 85vh; overflow-y: auto; }

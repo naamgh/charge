@@ -114,17 +114,26 @@ const LIGHT_COPY = {
 
 function redirectUri() { return location.origin + location.pathname; }
 
+// Your Strava Worker (config.js) holds the Client Secret, so the phone never needs it.
+function proxyUrl() { return (typeof CHARGE_CONFIG !== 'undefined' && CHARGE_CONFIG.tokenProxy || '').trim().replace(/\/+$/, ''); }
+function clientId() { return (typeof CHARGE_CONFIG !== 'undefined' && String(CHARGE_CONFIG.stravaClientId || '').trim()) || S.settings.clientId; }
+function oneTap() { return !!(proxyUrl() && clientId()); }
+
 function connectStrava() {
-  const { clientId, clientSecret } = S.settings;
-  if (!clientId || !clientSecret) { toast('Add your Client ID and Secret first.'); return; }
-  const p = new URLSearchParams({
-    client_id: clientId,
-    response_type: 'code',
-    redirect_uri: redirectUri(),
-    approval_prompt: 'auto',
-    scope: 'activity:read_all,activity:write',
-  });
+  if (!oneTap() && (!clientId() || !S.settings.clientSecret)) { toast('Add your Client ID and Secret first.'); return; }
+  const p = new URLSearchParams({ client_id: clientId(), response_type: 'code', redirect_uri: redirectUri(),
+    approval_prompt: 'auto', scope: 'activity:read_all,activity:write' });
   location.href = `${STRAVA_AUTH}?${p}`;
+}
+
+// Swap a login code or refresh token for fresh tokens, through the Worker when there is one.
+async function proxyToken(params) {
+  const res = await fetch(proxyUrl() + (params.grant_type === 'refresh_token' ? '/refresh' : '/exchange'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(j.message || `Strava sign-in error ${res.status}`); e.status = res.status; throw e; }
+  return j;
 }
 
 async function tokenRequest(body) {
@@ -145,12 +154,9 @@ async function handleOAuthReturn() {
   const scope = p.get('scope') || '';
   if (!scope.includes('activity:read')) { toast('Activity access was not granted. Connect again and tick activity access.', 4000); return; }
   try {
-    const data = await tokenRequest({
-      client_id: S.settings.clientId,
-      client_secret: S.settings.clientSecret,
-      code: p.get('code'),
-      grant_type: 'authorization_code',
-    });
+    const data = oneTap()
+      ? await proxyToken({ grant_type: 'authorization_code', code: p.get('code') })
+      : await tokenRequest({ client_id: clientId(), client_secret: S.settings.clientSecret, code: p.get('code'), grant_type: 'authorization_code' });
     S.strava = {
       access_token: data.access_token,
       refresh_token: data.refresh_token,
@@ -162,7 +168,7 @@ async function handleOAuthReturn() {
     toast('Strava connected.');
     await refreshActs(true);
   } catch (e) {
-    S.stravaError = 'Could not finish connecting. Check the Client Secret and try again.';
+    S.stravaError = oneTap() ? `Could not finish connecting (${e.message}). Tap Connect with Strava to try again.` : 'Could not finish connecting. Check the Client Secret and try again.';
     toast(S.stravaError, 4000);
   }
 }
@@ -170,12 +176,21 @@ async function handleOAuthReturn() {
 async function accessToken() {
   if (!stravaConnected()) return null;
   if ((S.strava.expires_at || 0) * 1000 - 60000 > Date.now()) return S.strava.access_token;
-  const data = await tokenRequest({
-    client_id: S.settings.clientId,
-    client_secret: S.settings.clientSecret,
-    grant_type: 'refresh_token',
-    refresh_token: S.strava.refresh_token,
-  });
+  let data;
+  if (oneTap()) {
+    try { data = await proxyToken({ grant_type: 'refresh_token', refresh_token: S.strava.refresh_token }); }
+    catch (e) {
+      if (e.status === 400 || e.status === 401) { S.strava = null; del('strava'); throw new Error('Strava access expired. Tap Connect with Strava in Settings.'); }
+      throw new Error('Could not refresh Strava access. Try again in a minute.');
+    }
+  } else {
+    data = await tokenRequest({
+      client_id: clientId(),
+      client_secret: S.settings.clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: S.strava.refresh_token,
+    });
+  }
   Object.assign(S.strava, { access_token: data.access_token, refresh_token: data.refresh_token, expires_at: data.expires_at });
   save('strava', S.strava);
   return S.strava.access_token;
@@ -188,7 +203,7 @@ function loadFit() {
   if (window.ChargeFit) return Promise.resolve();
   if (!fitLoading) fitLoading = new Promise((ok, bad) => {
     const sc = document.createElement('script');
-    sc.src = 'fit.bundle.js?v=8'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
+    sc.src = 'fit.bundle.js?v=10'; sc.onload = ok; sc.onerror = () => { fitLoading = null; bad(new Error('Could not load the FIT builder.')); };
     document.head.appendChild(sc);
   });
   return fitLoading;
@@ -274,90 +289,126 @@ async function refreshActs(force = false) {
 
 /* ---------- Views ---------- */
 
+function sessionMinutes(sess) {
+  const secs = sess.exercises.reduce((t, e) => t + e.target.sets * ((e.rest || 60) + (e.hold ? e.target.reps * (e.perSide ? 2 : 1) : 40)), 0);
+  return Math.max(15, Math.round((secs / 60 + 5) / 5) * 5);
+}
+
 function viewToday() {
   const t = todayState();
   const now = new Date();
   const bw = trainingWeek(now.getTime());
-  const plannedKey = defaultRoutine(now.getDay());
+  const gymDay = defaultRoutine(now.getDay()).planned;
   const L = currentLight();
   const copy = LIGHT_COPY[L.light];
   const preview = buildSession(t.routine, L.light, S.history, bw, now.getTime());
-
-  let acts = '';
-  if (!stravaConnected()) {
-    acts = `<p>Strava not connected, so the light comes from how your legs feel. <button class="link" data-action="go" data-v="settings">Connect Strava</button></p>`;
-  } else if (L.strava) {
-    const items = L.strava.items;
-    acts = `<ul class="acts" aria-label="Activities in the last 72 hours">
-      ${items.length ? items.map(i => `<li>
-          <div style="min-width:0">
-            <div class="name">${esc(i.name)}</div>
-            <div class="meta">${i.km.toFixed(1)} km · ${fmtDuration(i.mins)}${i.hr ? ` · ${i.hr} bpm` : ''} · ${fmtAgo(i.hoursAgo)}${i.tags.length ? ` · ${i.tags.join(', ')}` : ''}</div>
-          </div>
-          <div class="pts">+${i.points}</div>
-        </li>`).join('') : '<li><span class="muted">No runs or rides in the last 72 hours.</span></li>'}
-      <li><span class="muted">Strava load${S.acts ? `, updated ${fmtAgo(Math.round((Date.now() - S.acts.fetchedAt) / 3600000))}` : ''}</span><span class="pts">${L.strava.score}</span></li>
-    </ul>`;
-  } else {
-    acts = `<p>${S.loading ? 'Pulling your last 72 hours from Strava...' : 'No Strava data yet.'}</p>`;
-  }
-
+  const run = typeof planDay === 'function' ? planDay(now) : null;
   const session = S.session;
+
+  const week = bw.planWeek ? `Week ${bw.planWeek} · ${bw.deload ? 'Lighter' : esc(bw.phaseName)}` : `Block ${bw.block} · ${bw.deload ? 'Deload' : `Week ${bw.week}`}`;
+
+  const runCardHtml = run ? `<button class="tcard trow" data-action="go" data-v="plan" aria-label="Run plan for today">
+      <div style="min-width:0;flex:1">
+        <div class="eyebrow">${run.kind === 'rest' ? 'Rest day' : run.kind === 'bike' ? 'Ride' : 'Run'}</div>
+        <div class="trow-title">${esc(run.title.replace(/^Gym AM, (\w)/, (m, c) => c.toUpperCase()))}</div>
+        <div class="muted trow-sub">${esc(run.detail)}</div>
+      </div>
+      <span class="chev" aria-hidden="true"></span>
+    </button>` : '';
+
+  const moves = preview.exercises.map(e => `<li><span>${esc(e.name)}</span><span class="rx">${e.target.sets}×${e.target.reps}${e.hold ? 's' : ''}${e.perSide ? '/side' : ''} · ${e.target.kg === null ? 'set kg' : e.target.kg === 0 ? 'BW' : fmtKg(e.target.kg) + ' kg'}</span></li>`).join('');
+
+  const gymCard = `<section class="tcard gym ${gymDay || session ? '' : 'quiet'}" aria-label="Gym">
+      <div class="row between">
+        <div class="eyebrow">${gymDay ? 'Gym' : 'Gym · not planned today'}</div>
+        <button class="chip ${L.light}" data-action="sheet" data-v="load" aria-label="${copy.title} day, see why"><span class="dot ${L.light}"></span>${copy.title}</button>
+      </div>
+      <div class="row between" style="align-items:flex-end">
+        <h2 class="gym-title">${esc(preview.name)}</h2>
+        <div class="ab" role="group" aria-label="Routine">
+          ${Object.keys(ROUTINES).map(k => `<button data-action="routine" data-v="${k}" aria-pressed="${t.routine === k}" aria-label="Routine ${k}, ${esc(ROUTINES[k].name)}">${k}</button>`).join('')}
+        </div>
+      </div>
+      <div class="mono muted gym-meta">${preview.exercises.length} moves · about ${sessionMinutes(preview)} min</div>
+      <p class="soft gym-note">${esc(copy.text)}</p>
+      <details class="moves"><summary>See the moves</summary><ul class="plan">${moves}</ul></details>
+      ${session
+        ? `<button class="btn btn-primary btn-big btn-block" data-action="resume">Resume session</button>`
+        : `<button class="btn ${gymDay ? 'btn-primary btn-big' : ''} btn-block" data-action="start">${gymDay ? 'Start session' : 'Start anyway'}</button>`}
+    </section>`;
+
+  const keyTxt = t.keyRun ? 'key run tomorrow' : 'no key run tomorrow';
+  const checkin = `<button class="tcard trow checkin" data-action="sheet" data-v="checkin">
+      <div style="min-width:0;flex:1">
+        <div class="eyebrow">Check-in</div>
+        <div class="trow-title">Legs ${t.legs}/10 · ${keyTxt}${t.override !== 'auto' ? ` · set to ${esc(t.override)}` : ''}</div>
+      </div>
+      <span class="chev" aria-hidden="true"></span>
+    </button>`;
+
   return `
   <div class="stack">
     <div class="head">
       <div>
         <div class="eyebrow">${now.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short' })}</div>
-        <h1>${esc(ROUTINES[t.routine].name)}</h1>
+        <h1>Today</h1>
       </div>
-      <div class="mono soft" style="font-size:16px;text-align:right">${bw.planWeek
-        ? `Plan week ${bw.planWeek}<br>${bw.deload ? 'Lighter week' : esc(bw.phaseName)}`
-        : `Block ${bw.block}<br>${bw.deload ? 'Deload week' : `Week ${bw.week} of 3`}`}</div>
+      <div class="mono soft" style="font-size:16px;text-align:right">${week}</div>
     </div>
+    ${gymDay || session ? gymCard + runCardHtml : runCardHtml + gymCard}
+    ${checkin}
+  </div>`;
+}
 
-    <div class="seg" role="group" aria-label="Routine">
-      ${Object.keys(ROUTINES).map(k => `<button data-action="routine" data-v="${k}" aria-pressed="${t.routine === k}">${k} · ${esc(ROUTINES[k].name.split(' ')[0])}</button>`).join('')}
-    </div>
-    ${!plannedKey.planned ? '<p class="muted" style="font-size:13px">No gym planned today. Pick a routine if you are going anyway.</p>' : ''}
-
-    ${runCard(now)}
-
-    <section class="light ${L.light}" aria-label="Today's light">
-      <div class="row between">
-        <div class="light-label"><span class="dot ${L.light}"></span>${copy.title} · ${copy.sub}</div>
-        ${stravaConnected() ? `<button class="btn btn-sm btn-ghost" data-action="refresh" aria-label="Refresh Strava">${S.loading ? '...' : 'Refresh'}</button>` : ''}
-      </div>
-      <p>${copy.text}</p>
-      ${L.reasons.length ? `<p class="mono" style="font-size:12px">${esc(L.reasons.join(' · '))}</p>` : ''}
-      ${S.stravaError ? `<p style="color:var(--red-ink)">${esc(S.stravaError)}</p>` : ''}
-      ${acts}
-    </section>
-
-    <div class="card stack">
+// Panels that slide up over the Today screen.
+function todaySheet() {
+  if (!S.sheet || S.view !== 'today') return '';
+  const t = todayState();
+  const now = new Date();
+  let body = '';
+  if (S.sheet === 'checkin') {
+    const tm = typeof planDay === 'function' ? planDay(planAddDays(now, 1)) : null;
+    body = `<h2 id="sheetTitle">Check-in</h2>
       <label class="field" for="legs">
-        <span class="row between"><span>How do your legs feel?</span><span class="mono" id="legsVal" style="color:var(--text);font-size:15px">${t.legs}/10</span></span>
+        <span class="row between"><span style="color:var(--text);font-weight:600;font-size:16px">How do your legs feel?</span><span class="mono" id="legsVal" style="color:var(--text);font-size:22px;font-weight:700">${t.legs}/10</span></span>
         <input id="legs" type="range" min="1" max="10" step="1" value="${t.legs}" data-today="legs">
       </label>
-      <label class="toggle"><span>Key run tomorrow</span><input type="checkbox" data-today="keyRun" ${t.keyRun ? 'checked' : ''}></label>
+      <label class="toggle"><span>Key run tomorrow${tm ? `<br><small class="muted">${esc(tm.title)}</small>` : ''}</span><input type="checkbox" data-today="keyRun" ${t.keyRun ? 'checked' : ''}></label>
       <div>
-        <div class="eyebrow" style="margin-bottom:8px">Override</div>
+        <div class="eyebrow" style="margin-bottom:8px">Override the light</div>
         <div class="seg" role="group" aria-label="Override light">
           ${['auto', 'green', 'amber', 'red'].map(o => `<button data-action="override" data-v="${o}" aria-pressed="${t.override === o}">${o[0].toUpperCase() + o.slice(1)}</button>`).join('')}
         </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="row between" style="margin-bottom:4px"><h2>${esc(preview.name)}</h2><span class="mono muted" style="font-size:12px">${preview.exercises.length} moves</span></div>
-      <ul class="plan">
-        ${preview.exercises.map(e => `<li><span>${esc(e.name)}</span><span class="rx">${e.target.sets}×${e.target.reps}${e.hold ? 's' : ''}${e.perSide ? '/side' : ''} · ${e.target.kg === null ? 'set kg' : e.target.kg === 0 ? 'BW' : fmtKg(e.target.kg) + ' kg'}</span></li>`).join('')}
+      </div>`;
+  } else if (S.sheet === 'load') {
+    const L = currentLight();
+    const copy = LIGHT_COPY[L.light];
+    let acts;
+    if (!stravaConnected()) {
+      acts = `<p class="soft">Strava isn't connected, so the light only uses how your legs feel.</p>${oneTap() ? stravaButton('Connect with Strava') : '<button class="btn btn-block" data-action="go" data-v="settings">Connect Strava in Settings</button>'}`;
+    } else if (L.strava) {
+      acts = `<ul class="acts" aria-label="Activities in the last 72 hours">
+        ${L.strava.items.length ? L.strava.items.map(i => `<li>
+            <div style="min-width:0"><div class="name">${esc(i.name)}</div>
+              <div class="meta">${i.km.toFixed(1)} km · ${fmtDuration(i.mins)}${i.hr ? ` · ${i.hr} bpm` : ''} · ${fmtAgo(i.hoursAgo)}${i.tags.length ? ` · ${i.tags.join(', ')}` : ''}</div></div>
+            <div class="pts">+${i.points}</div></li>`).join('') : '<li><span class="muted">No runs or rides in the last 72 hours.</span></li>'}
+        <li><span class="muted">Load${S.acts ? `, updated ${fmtAgo(Math.round((Date.now() - S.acts.fetchedAt) / 3600000))}` : ''}</span><span class="pts">${L.strava.score}</span></li>
       </ul>
-    </div>
-
-    ${session
-      ? `<button class="btn btn-primary btn-big btn-block" data-action="resume">Resume ${esc(session.name)}</button>`
-      : `<button class="btn btn-primary btn-big btn-block" data-action="start">Start session</button>`}
-  </div>`;
+      <button class="btn btn-block" data-action="refresh">${S.loading ? 'Refreshing...' : 'Refresh from Strava'}</button>`;
+    } else {
+      acts = `<p class="soft">${S.loading ? 'Pulling your last 72 hours from Strava...' : 'No Strava data yet.'}</p>`;
+    }
+    body = `<div class="light-label" id="sheetTitle" style="color:inherit"><span class="dot ${L.light}"></span>${copy.title} · ${copy.sub}</div>
+      <p class="soft">${esc(copy.text)}</p>
+      ${L.reasons.length ? `<p class="mono muted" style="font-size:15px">${esc(L.reasons.join(' · '))}</p>` : ''}
+      ${S.stravaError ? `<p style="color:var(--red-ink)">${esc(S.stravaError)}</p>` : ''}
+      ${acts}`;
+  }
+  return `<div class="sheet-back" data-action="sheet-close"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+      ${body}
+      <button class="btn btn-primary btn-block" data-action="sheet-close" style="height:52px">Done</button>
+    </div>`;
 }
 
 function exComplete(e) { return e.sets.every(x => x.done) && e.rpe != null; }
@@ -528,6 +579,12 @@ function stravaRow(s) {
   return err + `<div><button class="btn btn-sm" data-action="post" data-id="${esc(s.id)}">${st ? 'Retry post to Strava' : 'Post to Strava'}</button></div>`;
 }
 
+function stravaButton(label) {
+  return `<button class="btn-strava" data-action="connect">
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.39 17.94l-2.09-4.12h-3.07l5.16 10.18 5.15-10.18h-3.07zM10.2 2L3.3 15.6h4.06L10.2 9.98l2.82 5.62h4.04z"/></svg>
+    <span>${esc(label)}</span></button>`;
+}
+
 function viewSettings() {
   const st = S.settings;
   const bw = trainingWeek(Date.now());
@@ -541,11 +598,13 @@ function viewSettings() {
         <p class="soft">${S.strava.athlete ? `Connected as ${esc(S.strava.athlete)}. ` : ''}Charge reads your last 72 hours of runs and rides before each session.</p>
         ${canPost() ? `<label class="toggle"><span>Post sessions to Strava when I finish</span><input type="checkbox" data-setting-check="autoPost" ${st.autoPost !== false ? 'checked' : ''}></label>
           <p class="muted" style="font-size:12px">Posts as Weight Training with every set attached, so Strava can draw the muscle map. If you also record gym sessions on your watch, turn that off to avoid doubles.</p>`
-        : `<p style="color:var(--amber-ink);font-size:14px">Posting to Strava needs one more permission.</p><button class="btn btn-sm btn-primary" data-action="connect">Reconnect to allow posting</button>`}
+        : `<p style="color:var(--amber-ink);font-size:14px">Posting to Strava needs one more permission.</p>${stravaButton('Reconnect to allow posting')}`}
         <div class="row">
           <button class="btn btn-sm" data-action="refresh">Refresh now</button>
           <button class="btn btn-sm btn-danger" data-action="disconnect">Disconnect</button>
-        </div>` : `
+        </div>` : oneTap() ? `
+        <p class="soft">Charge reads your last 72 hours of runs and rides to set each session, and posts your sessions back with the muscle map.</p>
+        ${stravaButton('Connect with Strava')}` : `
         <p class="soft">One-time setup, about 3 minutes:</p>
         <ol class="soft" style="margin:0;padding-left:20px;line-height:1.6;font-size:14px">
           <li>Open <a href="https://www.strava.com/settings/api" target="_blank" rel="noopener">strava.com/settings/api</a> and create an app (any name, any website).</li>
@@ -554,7 +613,7 @@ function viewSettings() {
         </ol>
         <label class="field">Client ID<input class="input" inputmode="numeric" data-setting="clientId" value="${esc(st.clientId)}" autocomplete="off"></label>
         <label class="field">Client Secret<input class="input" type="password" data-setting="clientSecret" value="${esc(st.clientSecret)}" autocomplete="off"></label>
-        <p class="muted" style="font-size:12px">Stored only on this phone. Never put it in your GitHub repo.</p>
+        <p class="muted" style="font-size:12px">Stored only on this phone. To skip this, add your Strava Worker to config.js (see the README).</p>
         <button class="btn btn-primary" data-action="connect">Connect Strava</button>`}
       ${S.stravaError ? `<p style="color:var(--red-ink);font-size:14px">${esc(S.stravaError)}</p>` : ''}
     </section>
@@ -610,20 +669,6 @@ async function reloadFresh() {
 /* ---------- Plan ---------- */
 
 const RUN_KIND = { rest: 'Rest', easy: 'Easy', quality: 'Quality', gate: 'Gate', long: 'Long run', bike: 'Bike', race: 'Race' };
-
-function runCard(now) {
-  if (typeof planDay !== 'function') return '';
-  const td = planDay(now), tm = planDay(planAddDays(now, 1));
-  if (!td && !tm) return '';
-  const row = (lab, d) => d ? `<div class="run-row">
-      <div class="eyebrow">${lab}</div>
-      <div><strong>${esc(d.title)}</strong><p class="soft" style="font-size:14px;margin-top:2px">${esc(d.detail)}</p></div>
-    </div>` : '';
-  return `<section class="card run-card" aria-label="Run plan">
-    <div class="row between"><h2>Run plan</h2><button class="link" data-action="go" data-v="plan">Open plan</button></div>
-    ${row('Today', td)}${row('Tomorrow', tm)}
-  </section>`;
-}
 
 function planDayRows(w, now) {
   const ws = planWeekStart(w);
@@ -714,7 +759,7 @@ function render() {
     else if (S.view === 'history') html = viewHistory();
     else if (S.view === 'settings') html = viewSettings();
     else if (S.view === 'plan') html = viewPlan();
-    else html = viewToday();
+    else html = viewToday() + todaySheet();
   } catch (err) {
     document.body.classList.remove('in-session');
     html = viewCrash(err);
@@ -726,6 +771,7 @@ function render() {
 
 function go(view) {
   S.view = view;
+  S.sheet = null;
   if (view === 'today') refreshActs();
   render();
   window.scrollTo(0, 0);
@@ -849,6 +895,8 @@ document.addEventListener('click', e => {
   switch (a) {
     case 'go': go(el.dataset.v); break;
     case 'fresh': reloadFresh(); break;
+    case 'sheet': S.sheet = el.dataset.v; render(); break;
+    case 'sheet-close': S.sheet = null; render(); break;
     case 'routine': t.routine = el.dataset.v; save('today', t); render(); break;
     case 'override': t.override = el.dataset.v; save('today', t); render(); break;
     case 'refresh': refreshActs(true); break;

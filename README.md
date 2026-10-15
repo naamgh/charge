@@ -21,15 +21,18 @@ No server, no account. Everything is stored on your phone.
 4. After a minute it is live at `https://<your-username>.github.io/charge/`.
 5. Open that link on your phone, then **Share > Add to Home Screen**. It now opens like an app and works offline.
 
-## Connect Strava (once)
+## Connect Strava
 
-1. Go to <https://www.strava.com/settings/api> and create an app. Name and website can be anything.
-2. Set **Authorization Callback Domain** to `<your-username>.github.io` (no `https://`, no path).
-3. In Charge, open **Settings**, paste the Client ID and Client Secret, tap **Connect Strava** and approve.
+Charge uses the same Strava app and Cloudflare Worker as Overlay Studio, set in `config.js`:
 
-The secret is saved only in your phone's browser storage. Never commit it to the repo.
+- `stravaClientId`: your Strava app's Client ID (public, safe in the repo)
+- `tokenProxy`: your Worker, which holds the Client Secret and answers `POST /exchange` and `POST /refresh`
 
-If connecting fails with a network error, Strava is blocking the browser from swapping the code for a token. The fix is a tiny proxy on your existing Cloudflare Worker that forwards `POST /oauth/token` to Strava; point `STRAVA_TOKEN` in `app.js` at it.
+In the app: **Settings > Connect with Strava**, approve, done. Charge refreshes access by itself, so you only connect again if you disconnect or revoke access in Strava.
+
+If Strava says the redirect is invalid, check **Authorization Callback Domain** at strava.com/settings/api matches the domain Charge lives on (your github.io domain). If the Worker refuses the request, make sure it allows requests from that same domain.
+
+The Client Secret never goes in the repo or on the phone. Leave `tokenProxy` empty and Settings falls back to typing the Client ID and Secret.
 
 ## Posting to Strava (with muscle map)
 
@@ -112,6 +115,7 @@ The FIT SDK is Garmin's, under `FIT-SDK-LICENSE.txt`.
 | File | What it does |
 |---|---|
 | `index.html` | App shell |
+| `config.js` | Strava app and Worker addresses |
 | `routines.js` | Your programme |
 | `plan.js` | The Sub-2 Half Plan |
 | `engine.js` | Load scoring, progression, block weeks |
